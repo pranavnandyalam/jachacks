@@ -10,7 +10,7 @@ rewrite is caught and reverted, never shipped.
 
 import from jaclang.byllm.lib { Model }
 
-glob patcher: Model = Model(model_name="gemini/gemini-3.5-flash");
+glob patcher: Model = Model(model_name="ollama_chat/huihui_ai/qwen3-coder-abliterated");
 
 obj ExploitBrief {
     has vuln_class: str,

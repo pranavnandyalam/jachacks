@@ -32,5 +32,5 @@ watchdog = ">=3.0.0"
 [client]
 
 [byllm.model]
-default_model = "gemini/gemini-3.5-flash-lite"
-api_key = "${GEMINI_API_KEY}"
+default_model = "ollama_chat/huihui_ai/qwen3-coder-abliterated"
+# api_key not needed for local ollama

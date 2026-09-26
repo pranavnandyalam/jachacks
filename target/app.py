@@ -1,8 +1,6 @@
-"""Ledgerly - quick invoice app prototype.
-
-Seed users/tokens come from the environment (RQ_TOKENS, RQ_FLAG) so the
-sandbox can inject fresh values per run.
-"""
+# Ledgerly - quick invoice app prototype.
+# Seed users/tokens come from the environment (RQ_TOKENS, RQ_FLAG) so the
+# sandbox can inject fresh values per run.
 
 import json
 import os

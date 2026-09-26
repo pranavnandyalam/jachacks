@@ -13,7 +13,7 @@ import json;
 import from jaclang.byllm.lib { Model }
 import from sandbox { AttackReq, run_one_attack }
 
-glob attacker: Model = Model(model_name="gemini/gemini-3.5-flash-lite");
+glob attacker: Model = Model(model_name="ollama_chat/huihui_ai/qwen3-coder-abliterated");
 
 glob ATTACKER_USER: str = "alice";
 
