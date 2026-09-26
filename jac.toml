@@ -7,6 +7,8 @@ kind = "web-app"
 jac-version = "==0.37.23"
 
 [dependencies]
+flask = ">=3.0"
+
 [dependencies.npm]
 react = "^19.2.0"
 react-dom = "^19.2.0"
