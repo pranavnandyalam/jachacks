@@ -1,0 +1,78 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(jac check:*)",
+      "Bash(jac test:*)",
+      "Bash(jac fmt:*)",
+      "Bash(jac guide:*)",
+      "Bash(jac code:*)",
+      "Bash(jac run:*)",
+      "Bash(jac browse:*)",
+      "Bash(jac dot:*)",
+      "Bash(jac explain:*)",
+      "Bash(jac install:*)",
+      "Bash(.claude/scripts/jac-install-safe.sh:*)",
+      "Bash(\"$CLAUDE_PROJECT_DIR\"/.claude/scripts/jac-install-safe.sh:*)",
+      "Bash(jac --version)",
+      "Bash(JAC_DB_RO_UNITS=0 jac run:*)",
+      "Bash(JAC_TEST_JOBS=0 jac test:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(wc:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(echo:*)",
+      "Bash(sleep:*)",
+      "Bash(lsof -i:*)",
+      "Bash(curl -s localhost:*)",
+      "Bash(curl -s -X POST localhost:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(jac db status:*)",
+      "Bash(jac db list:*)",
+      "Bash(jac db inspect:*)",
+      "Bash(jac clean --cache:*)",
+      "mcp__jac__validate_jac",
+      "mcp__jac__check_syntax",
+      "mcp__jac__lint_jac",
+      "mcp__jac__format_jac",
+      "mcp__jac__explain_error",
+      "mcp__jac__search_docs",
+      "mcp__jac__get_resource",
+      "mcp__jac__list_examples",
+      "mcp__jac__get_example",
+      "mcp__jac__understand_jac_and_jaseci",
+      "mcp__jac__jac_to_py",
+      "mcp__jac__jac_to_js",
+      "mcp__jac__py_to_jac",
+      "mcp__jac__get_ast"
+    ],
+    "ask": [
+      "Bash(jac db drop:*)",
+      "Bash(jac db prune:*)",
+      "Bash(jac clean --all:*)",
+      "Bash(jac scale deploy:*)",
+      "Bash(jac scale destroy:*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/jac-check.sh",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}
