@@ -2,7 +2,7 @@
 
 > AI attackers find real vulnerabilities in an app's code, AI defenders patch that code, and a referee verifies every patch. The app's security evolves round by round.
 > Track: **Agentic AI** (primary) + **Best Jaclang**. JacHacks A2Tech, Sep 26–27.
-> Status (Sat 17:30): **v1 done** (settings-flip version, will be tagged `v1-fallback`) · **v2 (code patching) starting**
+> Status (Sat ~19:00): **v2 ENGINE DONE + consistency-tested** (tag `v2-engine-stable`). Red finds real vulns in `target/app.py`, Blue rewrites the real code (local ollama model), referee verifies every patch, security evolves v0→v1→v2→v3. 5/5 live matches find + patch all 3 holes, health held, ~55s each, offline (no API/quota). **NEXT: dashboard (T6), seed a demo match, jachammer deploy (T8, subprocess-under-hosting = biggest risk).** v1 settings-flip version preserved at tag `v1-fallback`.
 
 ## Check-in: where we are (Sat 17:30)
 
