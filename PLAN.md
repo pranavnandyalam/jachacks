@@ -1,19 +1,161 @@
 # PLAN: Red Queen
 
-> Adversarial red/blue AI agents that fight over a mock server on a Jac graph.
+> AI attackers find real vulnerabilities in an app's code, AI defenders patch that code, and a referee verifies every patch. The app's security evolves round by round.
 > Track: **Agentic AI** (primary) + **Best Jaclang**. JacHacks A2Tech, Sep 26–27.
-> Slice status: [x] 0 Spike · [ ] 1 Target+recon · [ ] 2 Red · [ ] 3 Blue+loop · [ ] 4 Dashboard · [ ] 5 Polish
+> Status (Sat 17:30): **v1 done** (settings-flip version, will be tagged `v1-fallback`) · **v2 (code patching) starting**
 
-## One-line pitch
-Two teams of real LLM agents — Red (attackers) and Blue (defenders) — battle over a mock SaaS target across many rounds. Red exploits real weaknesses over HTTP; Blue patches them; both adapt from memory stored in the graph; the target measurably hardens over time (rounds-to-breach climbs).
+## Check-in: where we are (Sat 17:30)
+
+**Works (v1, verified live 17:05 with gemini-3.5-flash-lite)**
+- Ledgerly target: 4 real holes (IDOR, BFLA, open debug, leaked secret), each leaking the flag over HTTP.
+- Red (`by llm`) picks attacks, keeps memory, writes rationales. Blue (`by llm`) patches the hole Red just hit.
+- Referee: health invariant held every round. `run_game` / `get_game_state` / replay saved in the graph.
+- 29 deterministic tests pass. A live 5-round match gave 4/4 breaches, 4/4 patched, and all 4 holes verified closed over HTTP afterwards.
+
+**Doesn't work / gaps**
+- Blue doesn't fix code. It flips pre-written on/off switches, so security doesn't *evolve*. It reaches a final state we wrote in advance.
+- The game is over at round 5, and every run plays out in the same order, so it looks scripted.
+- `run_game` blocks for about 48s in one HTTP call, so the dashboard can't show rounds live.
+- No LLM-failure fallback. No dashboard (`frontend.jac` is still the template guestbook). Not deployed. **7 commits not pushed.**
+
+**Decision:** pivot to v2. Red finds holes in real source code and Blue rewrites the code. The referee keeps a patch only if it verifiably works. v1 stays as the fallback.
+
+## v2: what we're building
+
+```
+        ┌──────────── each round ────────────┐
+source ─▶ RED reads code + memory ─▶ attack ─▶ sandbox ─▶ breach? (flag in response)
+                                                        │ yes
+                              BLUE rewrites the code ◀──┘
+                                        │
+         REFEREE: exploit now fails? + all old exploits fail? + normal use still works?
+                 ├─ yes → keep patch (new CodeVersion)       └─ no → revert, Blue gets 1 retry
+```
+Security evolves because every accepted patch is new code that nobody pre-wrote. The whole history (attacks, diffs, verdicts) lives in the Jac graph.
+
+### Components
+
+**1. Target app (Python, swappable), `target/`**
+- `app.py`: a small Flask invoice app, about 120 lines, in-memory data, with 3 planted bugs:
+  - IDOR on `GET /invoices/<id>`
+  - missing admin check on `GET /admin/invoices`
+  - a debug route that dumps config, including the secret
+- Auth is `Authorization: Bearer <token>`, with seeded tokens for alice, bob and admin. Red only holds alice's token.
+- **The flag is injected at runtime** (env `RQ_FLAG`, written onto the admin invoice and the app secret) and never appears in the source. Otherwise Red could "breach" just by reading the code.
+- `manifest.json` holds the entry file, flag env var, attacker token and the list of health checks (`method, path, token, expect_status, expect_contains`). **The engine only reads the manifest**, so the vibecoded app can be swapped in later without touching Jac.
+
+**2. Sandbox runner, `sandbox/runner.py` (Python, about 80 lines)**
+- `runner.py <source_file> attack <request.json>` or `runner.py <source_file> health`.
+- It loads the source fresh, seeds the flag, sends requests through Flask's `test_client()`, and prints JSON.
+- Run as a subprocess with `.jac/venv/bin/python` and a 10s timeout, so broken or malicious AI code can't hang or crash the server.
+
+**3. Jac engine (the product; all logic is Jac)**
+- `codebase.jac`: `CodeVersion` node `{version, source, author (seed|blue), diff, accepted}`, plus `current_source()` and revert.
+- `sandbox.jac`: bridge to the runner, `run_attack(src, req) -> HttpResult` and `run_health(src) -> HealthReport`.
+- `attacker.jac` (Red v2): `plan_attack(source, memory) -> Attack by llm`.
+  - `Attack {method: GET|POST, path, use_token: ATTACKER|NONE, body, vuln_class, hypothesis}`.
+  - Breach = the flag appears in the response. Every attempt, breached or blocked, is saved as an `Exploit` node, so Red adapts to what failed and the referee can re-run old exploits.
+- `defender.jac` (Blue v2): `write_patch(source, exploit, feedback) -> Patch by llm`, with `Patch {new_source, summary}`.
+  - Blue returns the full patched file (the file is small, so this is simpler and more reliable than diffs).
+  - Model: `gemini-3.5-flash` (flash-lite is too weak for code).
+- `referee.jac`: `verify(new_source, exploit)` accepts only if (a) this exploit now fails, (b) every previously accepted exploit still fails, and (c) every health check passes. Otherwise it reverts and gives Blue one retry, passing along the failure reason.
+- `arena.jac`: `start_game()`, **`step_round()`** (one round per HTTP call, which the dashboard polls), `get_game_state()`, and `run_game(n)` for convenience. The game ends when Red fails 3 rounds in a row, or at max rounds.
+- Every LLM call has a deterministic fallback (Red: replay a known probe; Blue: count the patch as rejected), so one bad model response can't kill a game.
+
+**4. Dashboard, `frontend.jac`**
+- Start and Step buttons, with Auto mode.
+- Round feed: Red's attack plus hypothesis, BREACH or blocked, Blue's patch summary, and the referee's verdict.
+- Code-diff panel per accepted patch.
+- Chart of open holes over the rounds.
+
+**State contract, fixed now so the dashboard can start against mock data:**
+```
+GameState { rounds_played, open_holes, patched, health_ok, finished,
+  rounds: [ { n, red: {method, path, hypothesis, vuln_class, breached},
+              blue: {summary, accepted, retried} | null,
+              referee: {exploit_blocked, regressions_ok, health_ok},
+              diff } ] }
+```
+
+### Tasks (build → `jac check`/`jac test` → review → commit)
+
+| # | Task | Owner | Est | Acceptance check |
+|---|---|---|---|---|
+| T0 | Push 7 commits and tag `v1-fallback`. Add `flask` to jac.toml and run `jac-install-safe.sh --dev`. | A | 15m | `.jac/venv/bin/python -c "import flask"` works; tag visible on GitHub |
+| T1 | Target app + manifest + runner | B | 45m | Health passes on the original source; 3 hand-written exploits leak the flag; a hand-fixed copy blocks all 3 and still passes health |
+| T2 | `sandbox.jac` + `codebase.jac` | A | 45m | jac tests call the runner via subprocess; CodeVersion persists; revert works |
+| T3 | `referee.jac` + `defender.jac` (**riskiest, do first after plumbing**) | C | 1.5h | Given each known exploit, a live Blue patch is accepted for ≥2 of 3 bugs; a deliberately broken patch fixture is rejected |
+| T4 | `attacker.jac` | C | 1h | Live Red finds ≥2 of 3 bugs from source alone within 6 attempts |
+| T5 | `arena.jac` + serve in `main.jac` | A | 1h | 8-round live game over HTTP: all 3 holes found and patched, health holds, diffs saved, `step_round` < 30s each |
+| T6 | Dashboard | D | parallel | Works on mock GameState by 21:00, live by 23:00 |
+| T7 | **Vibecoded target swap** (cuttable) | B | 1h | Generate an app from a lazy prompt (save the prompt), write its manifest, and a full game runs on it |
+| T8 | Deploy to jachammer (**test subprocess + venv work when hosted**), tune prompts, seed a strong run | A/C | overnight | Hosted URL runs a round, or the local + video fallback is decided |
+
+### Timeline
+| Time | What |
+|---|---|
+| 17:30–18:15 | T0 (A) · T1 (B) · C reads the Jac `by llm` patterns + drafts Red/Blue `sem`s · D starts T6 on mock state |
+| 18:15–19:00 | T2 (A) · T1 finish (B) |
+| 19:00–20:30 | **T3** (C, pairs with B) · A starts T5 skeleton |
+| 20:30–21:30 | T4 (C) · T5 (A) |
+| **22:00** | **CHECKPOINT.** If T3 isn't passing (Blue patches unreliable), ship v1 + dashboard; v2 becomes a "preview" demo |
+| 22:00–23:00 | Wire the dashboard live · end-to-end runs |
+| 23:00–00:00 | T7 vibecoded swap (cuttable) |
+| 00:00–02:00 | T8 deploy test + prompt tuning |
+| 02:00–05:00 | Seeded strong run saved · polish · sleep in shifts |
+| Sun 08:00–09:30 | Backup video, Devpost draft, **partial submit ≤ 9:30** |
+| 09:30–12:00 | Ship check, final video, **final submit by 12:00** |
+
+### Cut list if behind (cut in this order)
+1. T7 vibecoded swap: keep the pitch line, run on the hand-written target.
+2. Blue's retry.
+3. The open-holes chart (keep the feed and diffs).
+4. Auto mode (keep the Step button).
+5. All stretch goals (ElevenLabs, battle log) are out unless we're ahead at 02:00.
+
+### Risks
+| Risk | Mitigation |
+|---|---|
+| Blue's code patches are unreliable | Small file, full-file rewrite, stronger model, referee plus 1 retry. The 22:00 checkpoint triggers the v1 fallback |
+| Red "breaches" by reading the flag out of the source | Flag injected at runtime only |
+| Executing AI-written code | Subprocess, 10s timeout, local target, no secrets in its env beyond the flag |
+| jachammer hosting blocks subprocess or the venv | Test at T8 (not at the end). Fallback: in-process exec + thread timeout, or demo locally + video |
+| LLM hang (seen before with a retired model) | Pinned model names; subprocess timeouts; per-call fallback |
+| Demo nondeterminism | A seeded strong run saved and replayable from the graph |
+| ≥40% Jac rule | Python limited to the target (~120 lines) + runner (~80); the engine, agents, referee and dashboard are all Jac |
+
+### Pitch
+"AI writes insecure code fast. Red Queen fixes it just as fast. Attacker agents find real holes in the source, defender agents rewrite the code, and a referee only keeps patches that provably work. You can watch the app's security evolve."
 
 ## Constraints (from the hacker guide)
+- ≥40% of code in Jac. Public GitHub repo, demo video, Devpost description explaining Jac usage.
+- Host on jachammer.ai (coupon `JACHACKS-UMICH`); star `github.com/jaseci-labs/jac`.
+- **All code written Sat 12:30 PM → Sun 12:00 PM.**
+
+## Known jac 0.37.23 landmines (re-verified 2026-09-26)
+- **`jac install` is broken** on macOS-arm64. Always use `.claude/scripts/jac-install-safe.sh --dev`.
+- **Serve with `JAC_DB_RO_UNITS=0 jac run --dev --no-client main.jac`**, otherwise the first write after server start is applied twice. POST `/function/<name>` executes a served def.
+- **Kill stale `jac run` processes before starting a new one.** Two processes on the same embedded Postgres deadlock silently.
+- After a graph-schema change, run `jac db drop <name> -y` and restart, or get-or-create returns stale nodes.
+- The byllm key is `GEMINI_API_KEY` (models `gemini/gemini-3.5-flash-lite` and `gemini/gemini-3.5-flash`). A retired model name makes byllm **hang silently**, so check with curl.
+- `sem` strings must be single-line. No compound `and` inside filter comprehensions. obj fields without defaults must come before defaulted ones. Never name a filter parameter the same as the node attribute it's compared to (it silently self-compares). W1051/W2003 warnings are noise.
+- `sys.executable` inside jac is the jac binary (it accepts `-c`). Run the target via `.jac/venv/bin/python`, which is where flask goes.
+- Don't run several headless `claude -p` sessions in parallel (subscription limit).
+
+---
+
+# Appendix: v1 design (as built, tag `v1-fallback`)
+
+### One-line pitch
+Two teams of real LLM agents — Red (attackers) and Blue (defenders) — battle over a mock SaaS target across many rounds. Red exploits real weaknesses over HTTP; Blue patches them; both adapt from memory stored in the graph; the target measurably hardens over time (rounds-to-breach climbs).
+
+### Constraints (from the hacker guide)
 - ≥40% of code in Jac — the whole stack is Jac ✓
 - Public GitHub repo, demo video, Devpost description explaining Jac usage
 - Host on jachammer.ai (coupon `JACHACKS-UMICH`); star `github.com/jaseci-labs/jac`
 - **All code written Sat 12:30 PM → Sun 12:00 PM.** Brainstorming/this doc = allowed.
 
-## Core design decision (the de-risker)
+### Core design decision (the de-risker)
 **Everything is one Jac app. Weaknesses are policy fields on graph nodes; patches are structured field edits — never generated code.**
 
 - Ledgerly's endpoints are `:pub` Jac walkers that self-enforce policy read from an `Endpoint` node's boolean fields.
@@ -22,7 +164,7 @@ Two teams of real LLM agents — Red (attackers) and Blue (defenders) — battle
 - **Blue** patches by flipping that field on the node — a hot, reliable, structured edit. This removes the biggest risk (an agent reliably writing working patch *code* in 24h) while keeping exploit + defense real.
 - Demo honesty: "Blue hardens misconfigurations," not "Blue rewrites code."
 
-## Graph schema (Jac 0.37.23)
+### Graph schema (Jac 0.37.23)
 
 Target subgraph — Ledgerly:
 ```jac
@@ -57,7 +199,7 @@ Edges: `Game --has_round--> Round`, `Round --discovered--> Finding`, `Round --ap
 
 The battle graph runs on the **guest root** (all `:pub`) so judges viewing via jachammer without logging in see live state. Use `grant(game, level=AccessLevel.READ)` if a node needs opening.
 
-## Agents (walkers + `by llm`, tool-menu constrained)
+### Agents (walkers + `by llm`, tool-menu constrained)
 `by llm()` replaces the function body; the move is a **typed return**, which enforces the tool menu (no freeform actions). Describe fields with `sem`, not docstrings.
 ```jac
 enum RedAction { PROBE, LOGIN, READ_INVOICE, HIT_DEBUG, READ_CONFIG }
@@ -75,84 +217,3 @@ def choose_blue_move(observed: str, memory: str) -> BlueMove by llm();
 - **Orchestrator** `def:pub run_game(rounds: int)`: per round → recon → red move → execute → referee → blue move → execute → health check → append `Round`. Memory = each team reads its own past `Finding`/`PatchAttempt` subgraph and passes a summary into `by llm`.
 - **Model:** Haiku for per-move calls (cost/latency); `api_key = "${JAC_ANTHROPIC_KEY}"` in jac.toml.
 
-## Build status (updated 2026-09-26 — read this first when resuming)
-
-| Slice | State | Commit |
-|---|---|---|
-| 0 Spike | ✅ done, pushed | `5c1c523` |
-| 1 Target + recon | ✅ done, 12 tests + 15 HTTP checks | `110c05f`, `6ba84e7` |
-| 2 Red agent | ⚠️ code done (19 tests pass); **live LLM run blocked** | `d476f4e` |
-| 3 Blue + Referee + loop | not started | — |
-
-Commits after `5c1c523` are **local only**, not pushed yet.
-
-**Files:** `ledgerly.jac` (target: 4 weakness classes — invoice_read/owner_check IDOR, admin_invoices/auth_required BFLA, debug/is_debug_open, config/exposes_secret; `recon()`, `svc_health()`, unserved `set_policy`). `red.jac` (RedAction/RedMove typed `by llm` menu, `choose_red_move`, deterministic `execute_red_move`/`record_finding`/`red_memory`, served `run_red_turn`/`run_red_campaign`/`reset_red`). `main.jac` imports both.
-
-**Blocker:** live `by llm` → `credit balance is too low`. The Anthropic API account behind `JAC_ANTHROPIC_KEY` has no credits. Wiring and auth are confirmed correct. Fix: add credits at console.anthropic.com, or point the model at a funded/free provider.
-
-**Next:** (1) prove Red's autonomy (≥2 of 4 breaches) live, or with MockLLM. Swapping the `llm` glob in a test is unresolved: jac has no `global` keyword. (2) Slice 3.
-
-**Gotchas learned:** the guest-root graph persists in embedded Postgres (`jac db status --entry main.jac`). After a schema change, run `jac db drop <name> -y` and restart, or `ledgerly()` keeps stale state. Serve with `JAC_DB_RO_UNITS=0 jac run --dev --no-client main.jac` (there is no `serve` subcommand). `sem` strings must be single-line. GET `/function/x` returns the signature; POST executes. W1051/W2003 warnings are noise.
-
-## Slices (each: build → `jac check`/`jac test` → jac-reviewer → commit)
-
-| # | Slice | Acceptance check |
-|---|---|---|
-| 0 | **Spike (gate)** | Scaffold + Ledgerly with ONE endpoint (`invoice_read`, `owner_check=False`) + Flag. Manual call reads Flag (breach); flip `owner_check=True`; same call denied. **Proves the mechanic before anything else.** |
-| 1 | **Target + recon** | All 4 endpoints/weakness kinds + accounts + invoices + flag; `recon()` lists endpoints; scripted legit health request returns 200. Each `svc_*` behaves per its policy fields. |
-| 2 | **Red agent** | `run_red_turn()` autonomously breaches ≥2 of 4 weaknesses; `Finding` nodes persist; red reads its own memory. **Run `jac-install-safe.sh --dev` again here** (first `by llm` pulls litellm into the venv). |
-| 3 | **Blue + Referee + loop** | `run_game(5)` runs; rounds-to-breach increases; `health_ok` stays true; `PatchAttempt` nodes persist. |
-| 4 | **Dashboard** | Full-stack Jac client: force graph (nodes glow red on breach / blue on patch), rounds-to-breach chart, per-round strategy feed. Watchable live game in browser. |
-| 5 | **Polish + seed** | Tune `sem` prompts; pre-run a strong 15–20 round game and save the log for the video; deploy to jachammer. |
-
-## Schedule & roles (team of 4; build started 14:45 Sat)
-
-| Block | Slice | A (graph/orch) | B (target/red) | C (blue/referee) | D (dashboard/ship) |
-|---|---|---|---|---|---|
-| Sat 14:45–16:00 | Spike | scaffold, serve up, merge | Ledgerly + Flag | verify breach/patch manually | dashboard shell (client page, polls `get_state`) |
-| 16:00–19:00 | 1→2 | graph model, `recon()`, `get_state()` | red agent + `by llm` | referee + health check | force-graph component |
-| 19:00–23:00 | 3 | orchestrator `run_game` | red memory tuning | blue agent + patch executor | rounds-to-breach chart + strategy feed |
-| 23:00–03:00 | 4 → S6 | WebSocket/state feed | prompt tuning | S6a battle log | S6b ElevenLabs TTS, then S6c |
-| 03:00–05:00 | 5 | seed strong 15–20 round run | tune `sem` prompts | fallback moves / hardening | polish visuals |
-| Sun 08:00–09:30 | Ship 1 | **backup video, Devpost draft, PARTIAL SUBMIT ≤ 9:30** | | | video script |
-| 09:30–11:30 | Ship 2 | `/jac-ship-check`, host on jachammer, star repo | | | final video |
-| 11:30–12:00 | Ship 3 | `/jac-submit`, final Devpost + video | | | |
-
-Parallelism rule: one person owns each `.jac` file per block; merge through A. Don't run
-several headless `claude -p` sessions at once on one subscription.
-
-**Fallback if behind at 21:00:** freeze scope at Slices 0–3 + minimal dashboard; 2 weakness kinds.
-
-## Execution sequence (at 12:30)
-1. `harness/install.sh <event-repo>` → `cd` in.
-2. `/jac-kickoff Red Queen — adversarial red/blue agents on a Jac graph`
-   (verifies `jac --version` ≥ 0.37.22, warns if `ANTHROPIC_API_KEY` is set, scaffolds `jac create --kind web-app`, runs `jac-install-safe.sh --dev`, has jac-architect write `PLAN.md`).
-3. Dev server for checks (note the RO_UNITS flag): `JAC_DB_RO_UNITS=0 jac run --dev < /dev/null` (background).
-4. `/jac-slice Spike`, then Slices 1–5 in order.
-
-## Known jac 0.37.23 landmines (re-verified 2026-09-26)
-- **`jac install` is broken** on macOS-arm64 (bundled py3.14 `_posixsubprocess` / `_PyBytes_AsString`). Always use `.claude/scripts/jac-install-safe.sh --dev`. Re-run it after adding the first `by llm` (that's when litellm must land in `.jac/venv`).
-- **Serve with `JAC_DB_RO_UNITS=0`** — otherwise the first write after server start is replayed and applied twice.
-- **App model key is `JAC_ANTHROPIC_KEY`** (jac.toml `api_key = "${JAC_ANTHROPIC_KEY}"`). Never export `ANTHROPIC_API_KEY` — it makes Claude Code bill the API instead of the subscription.
-- **Don't run several headless `claude -p` in parallel** — hits the subscription session limit.
-- Syntax: no `pass` (use `{}`); `with entry` runs on import (use `with entry:__main__`); `root` is bare (not `root()`); a walker's generic `can x with entry` fires only at the spawn node; `visit` is required to leave root; guard diamond re-visits with a `seen` set; use `jid()` not Python `id()`.
-
-## Stretch goals — "If Time" (only after Slices 0–4 are solid, ~Sat midnight)
-Ordered by ROI. Every item is a bolt-on; none blocks the core adversarial loop. Source of truth stays the **graph** — these are derived/optional.
-
-- **S6a — Battle log (`battle_log()`), ~1h.** A `def:pub battle_log() -> str` walks `Game --> Round` and formats a markdown transcript of the whole game (what Red tried, what Blue patched, whether it held). Powers the Devpost writeup + demo transcript for free. Write to disk best-effort in `on_commit(...)` only — always regenerable from the graph, so a hosted read-only FS doesn't matter. **Do not** feed the raw log back to Red/Blue as memory; they query the graph (open weaknesses, last N rounds) instead.
-- **S6b — ElevenLabs narration (TTS), ~2h.** Speak each round's `red_why` / `blue_why` in the dashboard ("Round 7: Blue locked the debug endpoint"). Pure text-to-speech, no public endpoint needed. Cheap insurance for the **Best of ElevenLabs** award + big demo flair.
-- **S6c — ElevenLabs conversational agent (the best version), ~4–6h.** A Conversational AI agent you talk to: *"what have you patched?"* / *"what's still open?"*. Register **server tools** (webhooks) mapped to `get_state()`, `battle_log()`, `list_open_vulnerabilities()`; system prompt = "SOC analyst for Red Queen, answer via tools"; embed the web widget in the dashboard. This is itself a **tool-using agent**, so it strengthens the Agentic AI story, not just the sponsor award. Needs the **public jachammer URL** (wire it after deploy) + an **ElevenLabs API key** (sponsor credits on Discord — grab early).
-- **S6d — Flourishes (only if everything above is done):** WebSocket live push (`@restspec(protocol=APIProtocol.WEBSOCKET, broadcast=True)` on an `async walker:pub`) instead of polling; a third "Director" agent that escalates difficulty each round; multiple target profiles (a bank, a hospital) to show generality.
-
-**Gate:** assign S6 only once Slices 0–4 pass their acceptance checks. On a team of 3, C owns S6 after the dashboard lands. Baseline is S6a + S6b (fast, low-risk); S6c is the reach goal.
-
-## Risks & mitigations
-1. **Blue autonomous patching** → structured field edits, not codegen (core design).
-2. **Agents don't visibly learn** → feed recent-round summaries into `by llm`; run 15–20 rounds; pre-seed a strong run for the video.
-3. **Looks like Inocula (Winter winner)** → lead the demo with the co-evolution curve + adapting tactics, not a SOC dashboard.
-4. **`by llm` structured output flakiness** → typed enum returns + a plain-Jac fallback move if parse fails.
-5. **Dashboard permissions (judges anonymous)** → run the game on guest root / `grant(... READ)`; start with polling `get_state()`, add WebSocket only if time.
-
-## Submission checklist
-Public repo ✓ · ≥40% Jac ✓ · demo video ✓ · Devpost w/ Jac usage ✓ · hosted on jachammer ✓ · starred repo ✓ · tracks: Agentic AI + Best Jaclang.
