@@ -110,17 +110,28 @@ def attack_to_req(a: Attack) -> AttackReq {
     );
 }
 
-"""Red's memory: what it tried and whether it breached, newest last."""
+"""Red's memory: what it tried, and -- importantly -- which endpoints are
+already breached-and-now-patched so it stops wasting turns re-attacking them."""
 def red_memory -> str {
     ats = red_attempts();
     if not ats {
         return "Nothing tried yet. Read the code and find the first hole.";
     }
+    breached_paths = [];
+    for a in ats {
+        if a.breached and a.path not in breached_paths {
+            breached_paths = breached_paths + [a.path];
+        }
+    }
     lines = [
-        f"- {a.method} {a.path} as {a.identity} [{a.vuln_class}]: {'BREACHED' if a.breached else 'no leak'}"
+        f"- {a.method} {a.path} as {a.identity} [{a.vuln_class}]: {'BREACHED (now patched by Blue)' if a.breached else 'no leak'}"
         for a in ats
     ];
-    return "Already tried:\n" + "\n".join(lines);
+    guidance = "";
+    if breached_paths {
+        guidance = f"\n\nDO NOT attack these already-closed endpoints again: {breached_paths}. Pick a DIFFERENT endpoint/route from the source that you have not yet breached.";
+    }
+    return "Already tried:\n" + "\n".join(lines) + guidance;
 }
 
 def record_attempt(a: Attack, breached: bool, round_n: int) -> Attempt {

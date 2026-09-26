@@ -22,8 +22,8 @@ import from defender { make_patch, ExploitBrief, Patch }
 import from referee { verify, record_exploit, reset_referee, confirmed_exploits, Verdict }
 import from sandbox { AttackReq, resolve_func, splice_function }
 
-glob MAX_ROUNDS: int = 12;
-glob MAX_MISSES: int = 3;
+glob MAX_ROUNDS: int = 14;
+glob MAX_MISSES: int = 5;
 glob MAX_PATCH_ATTEMPTS: int = 6;
 
 node Arena {
