@@ -314,3 +314,46 @@ test "health request stays 200 under full lockdown" {
     assert health.inv_id == "INV-1001";
     assert health.owner == "alice";
 }
+
+test "invoice_read enforces auth when auth_required is on" {
+    assert set_policy("invoice_read", "auth_required", True);
+    anon = svc_invoice_read("INV-1001", "");
+    assert not anon.ok;
+    assert anon.reason == "401 login required";
+    assert anon.flag == "";
+
+    # a logged-in user still gets through the auth gate
+    assert set_policy("invoice_read", "owner_check", False);
+    named = svc_invoice_read("INV-1001", "alice");
+    assert named.ok;
+
+    assert set_policy("invoice_read", "auth_required", False);
+}
+
+test "invoice_read returns 404 for a nonexistent invoice" {
+    missing = svc_invoice_read("INV-9999", "alice");
+    assert not missing.ok;
+    assert missing.reason == "404 invoice not found";
+    assert missing.flag == "";
+}
+
+test "owner_check is symmetric: bob cannot read alice's invoice either" {
+    assert set_policy("invoice_read", "owner_check", True);
+    assert set_policy("invoice_read", "auth_required", False);
+
+    bob_idor = svc_invoice_read("INV-1001", "bob");
+    assert not bob_idor.ok;
+    assert bob_idor.reason == "403 not your invoice";
+
+    bob_own = svc_invoice_read("INV-1002", "bob");
+    assert bob_own.ok;
+    assert bob_own.owner == "bob";
+}
+
+test "config still serves (200) with no flag once secret is closed" {
+    assert set_policy("config", "exposes_secret", False);
+    clean = svc_config("alice");
+    assert clean.ok;
+    assert clean.reason == "200 config";
+    assert clean.flag == "";
+}
