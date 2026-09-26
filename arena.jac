@@ -24,6 +24,7 @@ import from sandbox { AttackReq }
 
 glob MAX_ROUNDS: int = 12;
 glob MAX_MISSES: int = 3;
+glob MAX_PATCH_ATTEMPTS: int = 3;
 
 node Arena {
     has name: str = "red-queen",
@@ -44,6 +45,7 @@ node GameRound {
         blue_summary: str,
         blue_accepted: bool,
         blue_retried: bool,
+        blue_attempts: int,
         exploit_blocked: bool,
         regressions_ok: bool,
         health_ok: bool,
@@ -52,6 +54,17 @@ node GameRound {
 }
 
 edge Round: Arena --> GameRound {}
+
+node RejectedPatch {
+    has round_n: int,
+        path: str,
+        attempt: int,
+        reason: str,
+        summary: str,
+        source: str;
+}
+
+edge Rejected: Arena --> RejectedPatch {}
 
 obj RoundInfo {
     has n: int,
@@ -65,6 +78,7 @@ obj RoundInfo {
         blue_summary: str,
         blue_accepted: bool,
         blue_retried: bool,
+        blue_attempts: int,
         exploit_blocked: bool,
         regressions_ok: bool,
         health_ok: bool,
@@ -95,6 +109,25 @@ def arena_rounds -> list[GameRound] {
     return [arena() ->:Round:->[?:GameRound]];
 }
 
+obj RejectedInfo {
+    has round_n: int,
+        path: str,
+        attempt: int,
+        reason: str,
+        summary: str;
+}
+
+"""Rejected patch drafts (without full source) -- for the dashboard's
+'referee caught a bad patch' feed."""
+def:pub get_rejected_patches -> list[RejectedInfo] {
+    rps = [arena() ->:Rejected:->[?:RejectedPatch]];
+    return [
+        RejectedInfo(round_n=r.round_n, path=r.path, attempt=r.attempt,
+                     reason=r.reason, summary=r.summary)
+        for r in rps
+    ];
+}
+
 """Reset everything for a fresh match: rounds, codebase (reseeded at v0), Red's
 memory, and the referee's exploit suite."""
 def:pub reset_game -> int {
@@ -103,6 +136,10 @@ def:pub reset_game -> int {
     n = len(rs);
     for r in rs {
         del r;
+    }
+    rejected = [ar ->:Rejected:->[?:RejectedPatch]];
+    for rp in rejected {
+        del rp;
     }
     ar.rounds_played = 0;
     ar.consecutive_misses = 0;
@@ -113,9 +150,18 @@ def:pub reset_game -> int {
     return n;
 }
 
-"""Blue tries to patch `exploit`; referee gates it; one retry on rejection.
-Returns (accepted, summary, retried, verdict, new_version, diff)."""
-def _blue_defend(red: AttackResult) -> GameRound {
+"""Log a patch the referee rejected, so its failure mode is inspectable later."""
+def record_rejected(round_n: int, path: str, attempt: int, reason: str, patch: Patch) -> None {
+    arena() +>:Rejected():+> RejectedPatch(
+        round_n=round_n, path=path, attempt=attempt, reason=reason,
+        summary=patch.summary, source=patch.new_source
+    );
+}
+
+"""Blue tries to patch the exploit; the referee gates each attempt. Blue retries
+up to MAX_PATCH_ATTEMPTS times, each time fed the previous rejection reason as
+feedback. Every rejected draft is logged for inspection."""
+def _blue_defend(red: AttackResult, round_n: int) -> GameRound {
     src = current_source();
     brief = ExploitBrief(
         vuln_class=red.vuln_class, method=red.method,
@@ -124,13 +170,16 @@ def _blue_defend(red: AttackResult) -> GameRound {
     );
     target_req = AttackReq(method=red.method, path=red.path, as_user=_user_of(red.identity));
 
-    patch = write_patch(src, brief, "");
+    feedback = "";
+    patch = write_patch(src, brief, feedback);
     verdict = verify(patch.new_source, target_req);
-    retried = False;
-    if not verdict.accepted {
-        retried = True;
-        patch = write_patch(src, brief, verdict.reason);
+    attempts = 1;
+    while not verdict.accepted and attempts < MAX_PATCH_ATTEMPTS {
+        record_rejected(round_n, red.path, attempts, verdict.reason, patch);
+        feedback = f"Attempt {attempts} was REJECTED: {verdict.reason}. Return the COMPLETE valid Python file; fix only {red.path}; keep every earlier fix and all legitimate behavior intact.";
+        patch = write_patch(src, brief, feedback);
         verdict = verify(patch.new_source, target_req);
+        attempts += 1;
     }
 
     version = codebase().head;
@@ -139,12 +188,14 @@ def _blue_defend(red: AttackResult) -> GameRound {
         version = commit_version(patch.new_source, "blue", patch.summary);
         vs = [v for v in all_versions() if v.version == version];
         diff = vs[0].diff if vs else "";
+    } else {
+        record_rejected(round_n, red.path, attempts, verdict.reason, patch);
     }
     return GameRound(
         n=0, red_method=red.method, red_path=red.path, red_identity=red.identity,
         red_vuln=red.vuln_class, red_hypothesis=red.hypothesis, red_breached=True,
         red_status=red.status, blue_summary=patch.summary,
-        blue_accepted=verdict.accepted, blue_retried=retried,
+        blue_accepted=verdict.accepted, blue_retried=attempts > 1, blue_attempts=attempts,
         exploit_blocked=verdict.exploit_blocked, regressions_ok=verdict.regressions_ok,
         health_ok=verdict.health_ok, version=version, diff=diff
     );
@@ -168,7 +219,7 @@ def:pub step_round -> RoundInfo {
         n=turn, red_method=red.method, red_path=red.path, red_identity=red.identity,
         red_vuln=red.vuln_class, red_hypothesis=red.hypothesis, red_breached=red.breached,
         red_status=red.status, blue_summary="", blue_accepted=False, blue_retried=False,
-        exploit_blocked=False, regressions_ok=True, health_ok=True,
+        blue_attempts=0, exploit_blocked=False, regressions_ok=True, health_ok=True,
         version=codebase().head, diff=""
     );
 
@@ -178,10 +229,11 @@ def:pub step_round -> RoundInfo {
             AttackReq(method=red.method, path=red.path, as_user=_user_of(red.identity)),
             red.vuln_class, turn
         );
-        defended = _blue_defend(red);
+        defended = _blue_defend(red, turn);
         gr.blue_summary = defended.blue_summary;
         gr.blue_accepted = defended.blue_accepted;
         gr.blue_retried = defended.blue_retried;
+        gr.blue_attempts = defended.blue_attempts;
         gr.exploit_blocked = defended.exploit_blocked;
         gr.regressions_ok = defended.regressions_ok;
         gr.health_ok = defended.health_ok;
@@ -204,7 +256,8 @@ def _round_info(gr: GameRound) -> RoundInfo {
         n=gr.n, red_method=gr.red_method, red_path=gr.red_path, red_identity=gr.red_identity,
         red_vuln=gr.red_vuln, red_hypothesis=gr.red_hypothesis, red_breached=gr.red_breached,
         red_status=gr.red_status, blue_summary=gr.blue_summary, blue_accepted=gr.blue_accepted,
-        blue_retried=gr.blue_retried, exploit_blocked=gr.exploit_blocked,
+        blue_retried=gr.blue_retried, blue_attempts=gr.blue_attempts,
+        exploit_blocked=gr.exploit_blocked,
         regressions_ok=gr.regressions_ok, health_ok=gr.health_ok, version=gr.version, diff=gr.diff
     );
 }
@@ -213,8 +266,8 @@ def _empty_round(n: int) -> RoundInfo {
     return RoundInfo(
         n=n, red_method="", red_path="", red_identity="", red_vuln="", red_hypothesis="",
         red_breached=False, red_status=0, blue_summary="", blue_accepted=False,
-        blue_retried=False, exploit_blocked=False, regressions_ok=True, health_ok=True,
-        version=codebase().head, diff=""
+        blue_retried=False, blue_attempts=0, exploit_blocked=False, regressions_ok=True,
+        health_ok=True, version=codebase().head, diff=""
     );
 }
 
@@ -253,6 +306,20 @@ def:pub get_game_state -> GameState {
 }
 
 # ---- deterministic test (structure only, no LLM) -----------------------------
+
+test "rejected-patch logging records and resets" {
+    reset_game();
+    p = Patch(new_source="x", summary="bad draft");
+    record_rejected(2, "/debug", 1, "rejected: still breaches", p);
+    record_rejected(2, "/debug", 2, "rejected: broke health", p);
+    rej = get_rejected_patches();
+    assert len(rej) == 2;
+    assert rej[0].path == "/debug";
+    assert rej[0].attempt == 1;
+    assert "breaches" in rej[0].reason;
+    reset_game();
+    assert len(get_rejected_patches()) == 0;
+}
 
 test "reset_game seeds a clean arena at version 0" {
     reset_game();
