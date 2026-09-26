@@ -39,3 +39,20 @@ sem write_patch.source = "The current full source of the target Flask app.";
 sem write_patch.exploit = "The confirmed exploit to close.";
 sem write_patch.feedback = "Empty on the first try. If a previous attempt was rejected, this explains why (e.g. it broke a health check or left the hole open) -- fix accordingly.";
 def write_patch(source: str, exploit: ExploitBrief, feedback: str) -> Patch by patcher(temperature=0.1);
+
+# A higher-temperature variant used on later retries, so repeated attempts
+# produce genuinely different drafts instead of redrawing the same failing one.
+sem write_patch_creative = "You are Blue, a secure-coding agent. A confirmed exploit hit ONE endpoint of this small Flask app and your earlier low-temperature attempts were REJECTED. Try a materially DIFFERENT correct approach that closes exactly that one endpoint's hole with the smallest change. Do NOT touch any other endpoint. Keep every legitimate request working: users read their OWN data, admins read everything. Return the complete fixed file.";
+sem write_patch_creative.source = "The current full source of the target Flask app.";
+sem write_patch_creative.exploit = "The confirmed exploit to close.";
+sem write_patch_creative.feedback = "Why the previous attempts were rejected -- take a different approach that avoids these failures.";
+def write_patch_creative(source: str, exploit: ExploitBrief, feedback: str) -> Patch by patcher(temperature=0.7);
+
+"""Dispatch to a precise (low-temp) draft for the first attempts, then a
+higher-temp 'try something different' draft for later retries."""
+def make_patch(source: str, exploit: ExploitBrief, feedback: str, attempt: int) -> Patch {
+    if attempt <= 2 {
+        return write_patch(source, exploit, feedback);
+    }
+    return write_patch_creative(source, exploit, feedback);
+}

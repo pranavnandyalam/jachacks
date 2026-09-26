@@ -18,13 +18,13 @@ can poll and animate; `run_game` loops it to completion.
 
 import from codebase { codebase, current_source, commit_version, reset_codebase, all_versions }
 import from attacker { run_red_turn, reset_red, AttackResult }
-import from defender { write_patch, ExploitBrief, Patch }
+import from defender { make_patch, ExploitBrief, Patch }
 import from referee { verify, record_exploit, reset_referee, confirmed_exploits, Verdict }
 import from sandbox { AttackReq, resolve_func, splice_function }
 
 glob MAX_ROUNDS: int = 12;
 glob MAX_MISSES: int = 3;
-glob MAX_PATCH_ATTEMPTS: int = 3;
+glob MAX_PATCH_ATTEMPTS: int = 6;
 
 node Arena {
     has name: str = "red-queen",
@@ -187,14 +187,14 @@ def _blue_defend(red: AttackResult, round_n: int) -> GameRound {
     func = resolve_func(src, red.method, red.path);
 
     feedback = "";
-    patch = write_patch(src, brief, feedback);
+    patch = make_patch(src, brief, feedback, 1);
     candidate = _confine(src, patch.new_source, func);
     verdict = verify(candidate, target_req);
     attempts = 1;
     while not verdict.accepted and attempts < MAX_PATCH_ATTEMPTS {
         record_rejected(round_n, red.path, attempts, verdict.reason, patch);
         feedback = f"Attempt {attempts} was REJECTED: {verdict.reason}. Return the COMPLETE valid Python file. Change ONLY the {func} handler for {red.path}; leave every other line byte-for-byte identical.";
-        patch = write_patch(src, brief, feedback);
+        patch = make_patch(src, brief, feedback, attempts + 1);
         candidate = _confine(src, patch.new_source, func);
         verdict = verify(candidate, target_req);
         attempts += 1;
