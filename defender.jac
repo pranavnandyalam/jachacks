@@ -31,10 +31,10 @@ obj Patch {
         summary: str;
 }
 sem Patch = "The full rewritten source file plus a one-line summary of the fix.";
-sem Patch.new_source = "The COMPLETE contents of the fixed Python file -- every line, ready to save and run. Change only what is needed to close the hole; keep all other behavior identical so legitimate requests still work. Do not wrap it in markdown fences.";
+sem Patch.new_source = "The COMPLETE contents of the fixed Python file -- every line, ready to save and run. Fix ONLY the one endpoint named in the exploit; do NOT modify, harden, or touch any other route or handler even if it also looks insecure -- those are out of scope this turn. Keep the module docstring and all other behavior byte-for-byte identical so legitimate requests still work. Do not wrap it in markdown fences.";
 sem Patch.summary = "One sentence naming the fix, e.g. 'Enforce owner check on GET /invoices/<id>'.";
 
-sem write_patch = "You are Blue, a secure-coding agent. You are given the full source of a small Flask app and one confirmed exploit against it. Rewrite the file to close exactly that hole with a minimal, correct change (add the missing authorization or ownership check, disable the debug leak, etc.), while keeping every legitimate request working -- users must still read their OWN data, and admins must still read everything. Return the complete fixed file.";
+sem write_patch = "You are Blue, a secure-coding agent. You are given the full source of a small Flask app and ONE confirmed exploit against ONE endpoint. Make the smallest correct change that closes exactly that one endpoint's hole (add the missing authorization or ownership check, disable the debug leak, etc.). Do NOT fix or harden any other endpoint, even if you notice it is also vulnerable -- fixing only what was exploited is the point, so the attacker must find each hole separately. Keep every legitimate request working: users must still read their OWN data, and admins must still read everything. Return the complete fixed file.";
 sem write_patch.source = "The current full source of the target Flask app.";
 sem write_patch.exploit = "The confirmed exploit to close.";
 sem write_patch.feedback = "Empty on the first try. If a previous attempt was rejected, this explains why (e.g. it broke a health check or left the hole open) -- fix accordingly.";

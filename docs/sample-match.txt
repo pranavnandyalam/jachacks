@@ -1,0 +1,7 @@
+rounds=6 finished=True breaches=3 accepted=3 open=0 final_version=v3 health_ok=True
+R1: RED /invoices/INV-0001 as alice [BOLA] BREACH -> BLUE 'Added ownership and admin role checks to the get_invoice endpoint to p' ok=True retry=False -> v1
+R2: RED /debug as alice [Information Disclosure] BREACH -> BLUE 'Restrict access to the /debug endpoint to admin users only.' ok=True retry=False -> v2
+R3: RED /admin/invoices as alice [Missing Function Level Access Control] BREACH -> BLUE 'Add role check to /admin/invoices endpoint to restrict access to admin' ok=True retry=False -> v3
+R4: RED /invoices/INV-0001 as alice [BOLA] miss
+R5: RED /invoices/INV-0001 as anon [Broken Object Level Authorization] miss
+R6: RED /invoices/INV-0001 as alice [Broken Object Level Authorization] miss
