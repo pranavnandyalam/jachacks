@@ -17,7 +17,7 @@ import from ledgerly {
     set_policy, ATTACKER
 }
 
-glob llm: Model = Model(model_name="gemini/gemini-3.8-flash");
+glob llm: Model = Model(model_name="gemini/gemini-3.5-flash-lite");
 
 enum RedAction {
     PROBE,
