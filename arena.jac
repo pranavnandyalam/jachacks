@@ -20,7 +20,7 @@ import from codebase { codebase, current_source, commit_version, reset_codebase,
 import from attacker { run_red_turn, reset_red, AttackResult }
 import from defender { write_patch, ExploitBrief, Patch }
 import from referee { verify, record_exploit, reset_referee, confirmed_exploits, Verdict }
-import from sandbox { AttackReq }
+import from sandbox { AttackReq, resolve_func, splice_function }
 
 glob MAX_ROUNDS: int = 12;
 glob MAX_MISSES: int = 3;
@@ -150,6 +150,20 @@ def:pub reset_game -> int {
     return n;
 }
 
+"""Keep ONLY the exploited handler's change from Blue's full-file rewrite. Any
+other edit Blue made is discarded. Falls back to the full rewrite only if the
+handler can't be resolved or the splice fails."""
+def _confine(current: str, patched: str, func: str) -> str {
+    if not func {
+        return patched;
+    }
+    sr = splice_function(current, patched, func);
+    if sr.error or not sr.source {
+        return patched;
+    }
+    return sr.source;
+}
+
 """Log a patch the referee rejected, so its failure mode is inspectable later."""
 def record_rejected(round_n: int, path: str, attempt: int, reason: str, patch: Patch) -> None {
     arena() +>:Rejected():+> RejectedPatch(
@@ -169,23 +183,27 @@ def _blue_defend(red: AttackResult, round_n: int) -> GameRound {
         evidence=f"{red.hypothesis} -- the flag was returned to {red.identity}"
     );
     target_req = AttackReq(method=red.method, path=red.path, as_user=_user_of(red.identity));
+    # Which handler serves the exploited request -- Blue may only change THIS one.
+    func = resolve_func(src, red.method, red.path);
 
     feedback = "";
     patch = write_patch(src, brief, feedback);
-    verdict = verify(patch.new_source, target_req);
+    candidate = _confine(src, patch.new_source, func);
+    verdict = verify(candidate, target_req);
     attempts = 1;
     while not verdict.accepted and attempts < MAX_PATCH_ATTEMPTS {
         record_rejected(round_n, red.path, attempts, verdict.reason, patch);
-        feedback = f"Attempt {attempts} was REJECTED: {verdict.reason}. Return the COMPLETE valid Python file; fix only {red.path}; keep every earlier fix and all legitimate behavior intact.";
+        feedback = f"Attempt {attempts} was REJECTED: {verdict.reason}. Return the COMPLETE valid Python file. Change ONLY the {func} handler for {red.path}; leave every other line byte-for-byte identical.";
         patch = write_patch(src, brief, feedback);
-        verdict = verify(patch.new_source, target_req);
+        candidate = _confine(src, patch.new_source, func);
+        verdict = verify(candidate, target_req);
         attempts += 1;
     }
 
     version = codebase().head;
     diff = "";
     if verdict.accepted {
-        version = commit_version(patch.new_source, "blue", patch.summary);
+        version = commit_version(candidate, "blue", patch.summary);
         vs = [v for v in all_versions() if v.version == version];
         diff = vs[0].diff if vs else "";
     } else {

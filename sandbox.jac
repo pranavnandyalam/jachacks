@@ -13,6 +13,7 @@ import subprocess;
 
 glob TARGET_MANIFEST: str = "target/manifest.json";
 glob RUNNER: str = "sandbox/runner.py";
+glob EDITOR: str = "sandbox/edit.py";
 glob SANDBOX_TIMEOUT: int = 15;
 
 obj AttackReq {
@@ -132,6 +133,54 @@ def run_one_attack(source: str, req: AttackReq) -> AttackOutcome {
 """Convenience: run only the health suite against `source`."""
 def run_health(source: str) -> HealthReport {
     return run_sandbox(source, [], True).health;
+}
+
+obj SpliceResult {
+    has source: str,
+        error: str;
+}
+
+def _write_temp(text: str) -> str {
+    fd = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False);
+    path = fd.name;
+    fd.write(text);
+    fd.close();
+    return path;
+}
+
+def _run_editor(argv: list[str]) -> dict[str, any] {
+    try {
+        proc = subprocess.run(
+            [venv_python(), os.path.abspath(EDITOR)] + argv,
+            capture_output=True, text=True, timeout=SANDBOX_TIMEOUT
+        );
+        if proc.returncode != 0 {
+            return {"error": f"editor exit {proc.returncode}: {proc.stderr[-300:]}"};
+        }
+        return json.loads(proc.stdout);
+    } except Exception as e {
+        return {"error": f"editor failed: {e}"};
+    }
+}
+
+"""Resolve which handler function serves `method path` in `source` (via Flask's
+url map). Empty string if it can't be resolved."""
+def resolve_func(source: str, method: str, path: str) -> str {
+    src_path = _write_temp(source);
+    out = _run_editor(["resolve", src_path, method, path]);
+    os.unlink(src_path);
+    return out.get("func", "");
+}
+
+"""Take ONLY `func_name`'s definition from `patched` and splice it into `current`,
+discarding every other change. This is what confines Blue to one endpoint."""
+def splice_function(current: str, patched: str, func_name: str) -> SpliceResult {
+    cur_path = _write_temp(current);
+    pat_path = _write_temp(patched);
+    out = _run_editor(["splice", cur_path, pat_path, func_name]);
+    os.unlink(cur_path);
+    os.unlink(pat_path);
+    return SpliceResult(source=out.get("source", ""), error=out.get("error", ""));
 }
 
 # ---- bridge smoke tests (shell out to the real runner) -----------------------
