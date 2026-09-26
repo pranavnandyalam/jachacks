@@ -30,5 +30,5 @@ watchdog = ">=3.0.0"
 [client]
 
 [byllm.model]
-default_model = "anthropic/claude-haiku-4-5-20251001"
-api_key = "${JAC_ANTHROPIC_KEY}"
+default_model = "gemini/gemini-3.8-flash"
+api_key = "${GEMINI_API_KEY}"
