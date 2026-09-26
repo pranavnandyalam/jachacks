@@ -2,7 +2,7 @@
 
 > Adversarial red/blue AI agents that fight over a mock server on a Jac graph.
 > Track: **Agentic AI** (primary) + **Best Jaclang**. JacHacks A2Tech, Sep 26–27.
-> Slice status: [ ] 0 Spike · [ ] 1 Target+recon · [ ] 2 Red · [ ] 3 Blue+loop · [ ] 4 Dashboard · [ ] 5 Polish
+> Slice status: [x] 0 Spike · [ ] 1 Target+recon · [ ] 2 Red · [ ] 3 Blue+loop · [ ] 4 Dashboard · [ ] 5 Polish
 
 ## One-line pitch
 Two teams of real LLM agents — Red (attackers) and Blue (defenders) — battle over a mock SaaS target across many rounds. Red exploits real weaknesses over HTTP; Blue patches them; both adapt from memory stored in the graph; the target measurably hardens over time (rounds-to-breach climbs).
@@ -40,7 +40,9 @@ node Invoice { has inv_id: str; has owner: str; has amount: float; has secret: b
 node Flag    { has value: str; }       # Red's goal: read this
 ```
 Edges (endpoints required — a bare `edge {}` is E2086):
-`Service --exposes--> Endpoint`, `Endpoint --guards--> Invoice`, `Endpoint --guards--> Flag`.
+`Service -Exposes-> Endpoint`, `Endpoint -Guards-> Invoice`, `Invoice -Holds-> Flag` (the flag lives on the admin invoice `INV-0001`).
+
+**As built (Spike, `ledgerly.jac`):** Ledgerly endpoints are `def:pub svc_*` functions (`POST /function/svc_*`) returning `AccessResult`; the target is get-or-created by `ledgerly()`. Blue's lever `set_policy(kind, field, value)` is a plain `def` — verified NOT served (405) — so only the in-process game can patch.
 
 Battle / memory subgraph:
 ```jac
