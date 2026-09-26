@@ -75,6 +75,25 @@ def choose_blue_move(observed: str, memory: str) -> BlueMove by llm();
 - **Orchestrator** `def:pub run_game(rounds: int)`: per round → recon → red move → execute → referee → blue move → execute → health check → append `Round`. Memory = each team reads its own past `Finding`/`PatchAttempt` subgraph and passes a summary into `by llm`.
 - **Model:** Haiku for per-move calls (cost/latency); `api_key = "${JAC_ANTHROPIC_KEY}"` in jac.toml.
 
+## Build status (updated 2026-09-26 — read this first when resuming)
+
+| Slice | State | Commit |
+|---|---|---|
+| 0 Spike | ✅ done, pushed | `5c1c523` |
+| 1 Target + recon | ✅ done, 12 tests + 15 HTTP checks | `110c05f`, `6ba84e7` |
+| 2 Red agent | ⚠️ code done (19 tests pass); **live LLM run blocked** | `d476f4e` |
+| 3 Blue + Referee + loop | not started | — |
+
+Commits after `5c1c523` are **local only**, not pushed yet.
+
+**Files:** `ledgerly.jac` (target: 4 weakness classes — invoice_read/owner_check IDOR, admin_invoices/auth_required BFLA, debug/is_debug_open, config/exposes_secret; `recon()`, `svc_health()`, unserved `set_policy`). `red.jac` (RedAction/RedMove typed `by llm` menu, `choose_red_move`, deterministic `execute_red_move`/`record_finding`/`red_memory`, served `run_red_turn`/`run_red_campaign`/`reset_red`). `main.jac` imports both.
+
+**Blocker:** live `by llm` → `credit balance is too low`. The Anthropic API account behind `JAC_ANTHROPIC_KEY` has no credits. Wiring and auth are confirmed correct. Fix: add credits at console.anthropic.com, or point the model at a funded/free provider.
+
+**Next:** (1) prove Red's autonomy (≥2 of 4 breaches) live, or with MockLLM. Swapping the `llm` glob in a test is unresolved: jac has no `global` keyword. (2) Slice 3.
+
+**Gotchas learned:** the guest-root graph persists in embedded Postgres (`jac db status --entry main.jac`). After a schema change, run `jac db drop <name> -y` and restart, or `ledgerly()` keeps stale state. Serve with `JAC_DB_RO_UNITS=0 jac run --dev --no-client main.jac` (there is no `serve` subcommand). `sem` strings must be single-line. GET `/function/x` returns the signature; POST executes. W1051/W2003 warnings are noise.
+
 ## Slices (each: build → `jac check`/`jac test` → jac-reviewer → commit)
 
 | # | Slice | Acceptance check |
