@@ -1,0 +1,10 @@
+{
+  "name": "Support Portal",
+  "entry": "app.py",
+  "app_var": "app",
+  "files": ["app.py"],
+  "users": ["alice", "bob", "admin"],
+  "attacker": "alice",
+  "secret_hint": "An internal service token and other users' private tickets should never reach a low-privilege or anonymous caller.",
+  "health_checks": []
+}

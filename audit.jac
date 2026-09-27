@@ -472,3 +472,10 @@ def:pub get_audit_state -> AuditState {
 def _pass_n(p: Pass) -> int {
     return p.n;
 }
+
+"""Red-only scan: read the target's source and list the vulnerabilities Red
+finds, WITHOUT running or verifying anything. Works on any language, since it
+only reads code. Findings are unverified (no confirmed breach)."""
+def:pub scan_target -> VulnReport {
+    return find_vulns(files_blob(read_target_files()), secret_hint());
+}
