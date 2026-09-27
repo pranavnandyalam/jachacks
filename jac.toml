@@ -31,6 +31,11 @@ typescript = "^5.3.3"
 [dev-dependencies]
 watchdog = ">=3.0.0"
 
+# JacHammer's preview proxy breaks gzipped API responses for browsers (anything
+# over 1 KB fails with "Failed to fetch"), so serve them uncompressed.
+[serve.compression]
+enabled = false
+
 [client]
 
 [byllm.model]
