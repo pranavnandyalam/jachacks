@@ -24,6 +24,7 @@ import from sandbox { AttackReq, resolve_func, splice_function }
 
 glob MAX_ROUNDS: int = 14;
 glob MAX_MISSES: int = 5;
+glob SETTLED_MISSES: int = 2;
 glob MAX_PATCH_ATTEMPTS: int = 6;
 
 node Arena {
@@ -159,7 +160,9 @@ def _confine(current: str, patched: str, func: str) -> str {
     }
     sr = splice_function(current, patched, func);
     if sr.error or not sr.source {
-        return patched;
+        # Blocked (disallowed op) or splice failed: apply NOTHING. The unchanged
+        # source still breaches, so the referee rejects it and Blue retries.
+        return current;
     }
     return sr.source;
 }
@@ -202,10 +205,15 @@ def _blue_defend(red: AttackResult, round_n: int) -> GameRound {
 
     version = codebase().head;
     diff = "";
+    # The live app after this round: the new version if accepted, else the prior
+    # (unchanged, already-healthy) version. A rejected draft never goes live, so
+    # health reflects the live code, not the discarded draft.
+    live_health_ok = True;
     if verdict.accepted {
         version = commit_version(candidate, "blue", patch.summary);
         vs = [v for v in all_versions() if v.version == version];
         diff = vs[0].diff if vs else "";
+        live_health_ok = verdict.health_ok;
     } else {
         record_rejected(round_n, red.path, attempts, verdict.reason, patch);
     }
@@ -215,12 +223,22 @@ def _blue_defend(red: AttackResult, round_n: int) -> GameRound {
         red_status=red.status, blue_summary=patch.summary,
         blue_accepted=verdict.accepted, blue_retried=attempts > 1, blue_attempts=attempts,
         exploit_blocked=verdict.exploit_blocked, regressions_ok=verdict.regressions_ok,
-        health_ok=verdict.health_ok, version=version, diff=diff
+        health_ok=live_health_ok, version=version, diff=diff
     );
 }
 
 def _user_of(identity: str) -> str {
     return "" if identity == "anon" else identity;
+}
+
+def _accepted_count -> int {
+    return len([r for r in arena_rounds() if r.blue_accepted]);
+}
+
+"""Discovered holes not yet patched = confirmed exploits minus accepted patches."""
+def _open_holes -> int {
+    n = len(confirmed_exploits()) - _accepted_count();
+    return n if n > 0 else 0;
 }
 
 """Run exactly one round. Safe to call after the game is finished (no-op)."""
@@ -263,7 +281,13 @@ def:pub step_round -> RoundInfo {
 
     arena() +>:Round():+> gr;
     ar.rounds_played = turn;
-    if ar.consecutive_misses >= MAX_MISSES or turn >= MAX_ROUNDS {
+    # End when Red is clearly out of ideas: either it has whiffed MAX_MISSES times,
+    # or every hole it HAS found is patched (open==0, at least one patched) and it
+    # has whiffed a couple times since -- no point watching it flail on closed holes.
+    settled = _open_holes() == 0 and _accepted_count() >= 1;
+    if turn >= MAX_ROUNDS
+        or ar.consecutive_misses >= MAX_MISSES
+        or (settled and ar.consecutive_misses >= SETTLED_MISSES) {
         ar.finished = True;
     }
     return _round_info(gr);
@@ -297,6 +321,12 @@ def:pub run_game(max_rounds: int = 12) -> GameState {
         step_round();
     }
     return get_game_state();
+}
+
+"""The current live target source -- the code as it stands after all accepted
+patches. Lets the dashboard show the real final file, not just per-round diffs."""
+def:pub get_current_source -> str {
+    return current_source();
 }
 
 """Full match state for the dashboard: per-round replay plus running tallies."""

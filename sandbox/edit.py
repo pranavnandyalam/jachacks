@@ -31,6 +31,34 @@ def resolve(source_file: str, method: str, path: str) -> dict:
     return {"func": endpoint}
 
 
+DANGER_CALLS = {"eval", "exec", "compile", "__import__"}
+DANGER_ATTRS = {"system", "popen", "remove", "rmdir", "unlink", "spawn",
+                "execv", "execve", "fork", "kill"}
+DANGER_MODULES = {"subprocess", "socket", "shutil", "ctypes", "pty", "requests",
+                  "urllib", "http", "importlib"}
+
+
+def _scan_dangerous(func_node) -> str:
+    """Reason string if the function body uses a disallowed operation, else ''.
+    Guards against a patch that tries to run shell commands, open sockets, touch
+    the filesystem, or import risky modules."""
+    import ast as _ast
+    for n in _ast.walk(func_node):
+        if isinstance(n, _ast.Call):
+            f = n.func
+            if isinstance(f, _ast.Name) and f.id in DANGER_CALLS:
+                return f"disallowed call: {f.id}()"
+            if isinstance(f, _ast.Attribute) and f.attr in DANGER_ATTRS:
+                return f"disallowed call: .{f.attr}()"
+        if isinstance(n, (_ast.Import, _ast.ImportFrom)):
+            mod = n.module if isinstance(n, _ast.ImportFrom) else (
+                n.names[0].name if n.names else "")
+            root = (mod or "").split(".")[0]
+            if root in DANGER_MODULES:
+                return f"disallowed import: {root}"
+    return ""
+
+
 def _func_span(source: str, func_name: str):
     """Return (start_line, end_line) 1-indexed inclusive for a top-level function
     named func_name, including its decorators. None if not found."""
@@ -56,6 +84,14 @@ def splice(current_file: str, patched_file: str, func_name: str) -> dict:
         return {"source": "", "error": f"{func_name} not found in current source"}
     if new_span is None:
         return {"source": "", "error": f"{func_name} not found in patched source"}
+
+    # Reject a patch whose replacement function uses a disallowed operation.
+    for node in ast.parse(patched).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
+            danger = _scan_dangerous(node)
+            if danger:
+                return {"source": "", "error": f"blocked: {danger}"}
+            break
 
     cur_lines = current.splitlines()
     new_lines = patched.splitlines()
