@@ -13,9 +13,10 @@ import from config { read_manifest, target_source_path, secret_hint, policy, tar
 import from sandbox { AttackReq, run_sandbox_files }
 import from live { live_begin, live_draft, live_event, live_end }
 import from codecheck { apply_code_edits, syntax_errors }
+import from llm { LLM_MODEL }
 
-glob scanner: Model = Model(model_name="ollama_chat/huihui_ai/qwen3-coder-abliterated");
-glob fixer: Model = Model(model_name="ollama_chat/huihui_ai/qwen3-coder-abliterated");
+glob scanner: Model = Model(model_name=LLM_MODEL);
+glob fixer: Model = Model(model_name=LLM_MODEL);
 
 # ---- Red: find every vulnerability in one read ------------------------------
 

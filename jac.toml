@@ -33,5 +33,5 @@ watchdog = ">=3.0.0"
 [client]
 
 [byllm.model]
-default_model = "ollama_chat/huihui_ai/qwen3-coder-abliterated"
+default_model = "ollama_chat/huihui_ai/qwen3-coder-abliterated"  # agents use RQ_MODEL via llm.jac
 # api_key not needed for local ollama

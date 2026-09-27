@@ -5,6 +5,7 @@ syntax-check the result with each language's own parser. No LLM here."""
 import os;
 import shutil;
 import subprocess;
+import sys;
 import tempfile;
 
 glob TS_CHECKER: str = os.path.abspath("tools/syntax_check.js");
@@ -94,18 +95,23 @@ def apply_code_edits(files: dict[str, str], edits: list[tuple[str, str, str]], b
     return EditResult(files=out, applied=applied, missed=missed);
 }
 
-"""The syntax checker for a file, by extension; [] if we have none."""
+"""The syntax checker for a file, by extension; [] if we have none -- including
+when its tool isn't installed (e.g. no gofmt/node on a hosting box), so a
+missing checker skips the check instead of rejecting every patch."""
 def _checker(ext: str, tmp: str) -> list[str] {
+    cmd: list[str] = [];
     if ext == ".py" {
-        return ["python3", "-m", "py_compile", tmp];
+        cmd = [sys.executable, "-m", "py_compile", tmp];
+    } elif ext == ".go" {
+        cmd = ["gofmt", "-e", "-l", tmp];
+    } elif ext in [".ts", ".tsx", ".js", ".mjs"] and os.path.isfile(os.path.join(os.path.dirname(TS_CHECKER), "node_modules", "typescript", "package.json")) {
+        cmd = ["node", TS_CHECKER, tmp];
     }
-    if ext == ".go" {
-        return ["gofmt", "-e", "-l", tmp];
+    if cmd and not shutil.which(cmd[0]) {
+        print(f"[codecheck] no {cmd[0]} on this machine; skipping {ext} syntax check");
+        return [];
     }
-    if ext in [".ts", ".tsx", ".js", ".mjs"] {
-        return ["node", TS_CHECKER, tmp];
-    }
-    return [];
+    return cmd;
 }
 
 """Syntax-check one file with its language's parser. "" if it parses (or we

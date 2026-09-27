@@ -9,8 +9,9 @@ rewrite is caught and reverted, never shipped.
 """
 
 import from jaclang.byllm.lib { Model }
+import from llm { LLM_MODEL }
 
-glob patcher: Model = Model(model_name="ollama_chat/huihui_ai/qwen3-coder-abliterated");
+glob patcher: Model = Model(model_name=LLM_MODEL);
 
 obj ExploitBrief {
     has vuln_class: str,

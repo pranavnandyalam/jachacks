@@ -13,8 +13,9 @@ import json;
 import from jaclang.byllm.lib { Model }
 import from sandbox { AttackReq, run_one_attack }
 import from config { attacker_user, secret_hint }
+import from llm { LLM_MODEL }
 
-glob attacker: Model = Model(model_name="ollama_chat/huihui_ai/qwen3-coder-abliterated");
+glob attacker: Model = Model(model_name=LLM_MODEL);
 
 glob ATTACKER_USER: str = attacker_user();
 
