@@ -80,6 +80,7 @@ app.get('/api/admin/users', (_req, res) => {
   res.json(db.prepare('SELECT id,username,role,display_name FROM users ORDER BY id').all());
 });
 app.patch('/api/admin/users/:id', (req, res) => {
+  if (res.locals.user.role !== 'admin') { res.status(403).json({error:'Administrator required'}); return; }
   const name = req.body?.display_name;
   if (typeof name !== 'string' || !name.trim() || name.length > 80) { res.status(400).json({error:'Display name must be 1–80 characters'}); return; }
   const result = db.prepare('UPDATE users SET display_name=? WHERE id=?').run(name.trim(),String(req.params.id));

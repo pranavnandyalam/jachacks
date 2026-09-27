@@ -66,10 +66,10 @@ About three quarters of the code is Jac.
 | Site | Stack | Planted holes |
 |---|---|---|
 | ledgerly | Flask, 1 file | invoice IDOR, missing admin check, debug page leaking config |
-| Book Club | Flask, 5 files | read anyone's notes, member export of all notes, anyone's reading list, search across every member's notes, `/status` leaking runtime config |
-| Task Board | TypeScript / Express | read, delete and list other users' tasks; non-admin user updates |
+| Book Club | Flask, 5 files | read anyone's notes, member export of all notes, anyone's reading list, `/status` leaking runtime config |
+| Task Board | TypeScript / Express | read, delete and list other users' tasks |
 | Support Portal | Python / FastAPI | unauthenticated export, service token in account response, rename others' tickets, user lookup returning password hashes |
-| Deployment Dashboard | Go | debug endpoint leaking the admin password, non-admin deletes, session-token listing, hardcoded admin credential |
+| Deployment Dashboard | Go | debug endpoint leaking the admin password, non-admin deletes, session-token listing |
 
 The three `testsites/apps` are real, runnable apps (Docker, see `testsites/README.md`), all with synthetic data.
 
@@ -107,7 +107,7 @@ Tests: `jac test <file>.jac` for each module (e.g. `jac test audit.jac`), plus `
 
 - **The sandbox is a subprocess plus a static blocklist**, not a container. Fine for demo targets; don't point it at untrusted code on a machine you care about.
 - **Non-Flask fixes aren't verified by a live exploit.** The code-tracing referee is an LLM and can be wrong; when Blue re-reads a flagged route and finds nothing to change, the flag is marked reviewed rather than open.
-- **Red doesn't catch everything.** It reliably finds most planted holes; it usually misses Task Board's non-admin user-update route and Book Club's `/status` config leak.
+- **Red is an LLM, so recall varies run to run.** It usually finds every planted hole; occasionally one slips to a later pass or a later run.
 - **Agents run on a hosted LLM** (`gpt-4.1-mini` by default, about 1 to 2 cents per run). A local ollama model also works, just slower.
 
 ## Team

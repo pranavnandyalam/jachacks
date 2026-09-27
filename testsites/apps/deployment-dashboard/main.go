@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const adminPassword = "demo-deploy-admin-7c41"
+var adminPassword = os.Getenv("ADMIN_PASSWORD")
 
 type User struct {
 	ID       int    `json:"id"`
@@ -93,6 +93,9 @@ func persist() error {
 	return os.Rename(statePath+".tmp", statePath)
 }
 func main() {
+	if adminPassword == "" {
+		log.Fatal("ADMIN_PASSWORD is required")
+	}
 	dir := os.Getenv("DATA_DIR")
 	if dir == "" {
 		dir = "./data"

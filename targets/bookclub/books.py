@@ -23,9 +23,6 @@ def search_notes():
     if user is None:
         return jsonify({"error": "login required"}), 401
     q = request.args.get("q", "").lower()
-    hits = [
-        {"member": name, "note": note}
-        for name, note in NOTES.items()
-        if q and q in note.lower()
-    ]
+    note = NOTES.get(user["name"], "")
+    hits = [{"member": user["name"], "note": note}] if q and q in note.lower() else []
     return jsonify({"query": q, "results": hits})

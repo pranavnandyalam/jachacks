@@ -17,5 +17,5 @@
   "attacker": "alice",
   "secret_hint": "Debug configuration and admin credentials must never be reachable by a low-privilege or anonymous caller.",
   "health_checks": [],
-  "policy": "Viewing releases and deployments requires a signed-in user; creating or deleting deployments is admin-only. Session tokens, debug or configuration endpoints must not be reachable by non-admins, and no password, token or credential may ever appear in a response to a non-admin. The admin password must come from the DEPLOY_ADMIN_PASSWORD environment variable, never a hardcoded value."
+  "policy": "Viewing releases and deployments requires a signed-in user; creating or deleting deployments is admin-only. Session tokens, debug or configuration endpoints must not be reachable by non-admins, and no password, token or credential may ever appear in a response to a non-admin."
 }
