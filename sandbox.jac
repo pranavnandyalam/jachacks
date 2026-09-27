@@ -212,3 +212,37 @@ test "a syntactically broken patch reports a load_error, not a crash" {
     r = run_sandbox("def (:", [AttackReq(method="GET", path="/health")], False);
     assert r.load_error != "";
 }
+
+# ---- splice guard: a patched handler may only use plain request logic --------
+
+glob TODO_LINE: str = "    # TODO: check ownership\n";
+
+def _patched_with(line: str) -> str {
+    return _seed_source().replace(TODO_LINE, f"    {line}\n");
+}
+
+test "splice accepts a legitimate ownership fix" {
+    fix = _patched_with("if inv[\"owner\"] != user[\"name\"]:\n        return jsonify({\"error\": \"forbidden\"}), 403");
+    sr = splice_function(_seed_source(), fix, "get_invoice");
+    assert sr.error == "";
+    assert "forbidden" in sr.source;
+}
+
+test "splice blocks host access and guard bypasses in the patched handler" {
+    bad = [
+        "os.system(\"touch /tmp/rq_x\")",
+        "getattr(os, \"sys\" + \"tem\")(\"touch /tmp/rq_x\")",
+        "open(\"/tmp/rq_x\", \"w\").write(\"x\")",
+        "os.execlp(\"true\", \"true\")",
+        "__builtins__[\"__im\" + \"port__\"](\"subprocess\")",
+        "print(dict(os.environ))",
+        "import subprocess",
+        "x = inv.__class__.__mro__",
+        "globals()[\"os\"].getcwd()"
+    ];
+    for line in bad {
+        sr = splice_function(_seed_source(), _patched_with(line), "get_invoice");
+        assert sr.error != "", f"not blocked: {line}";
+        assert sr.source == "";
+    }
+}

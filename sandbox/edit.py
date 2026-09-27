@@ -31,31 +31,30 @@ def resolve(source_file: str, method: str, path: str) -> dict:
     return {"func": endpoint}
 
 
-DANGER_CALLS = {"eval", "exec", "compile", "__import__"}
-DANGER_ATTRS = {"system", "popen", "remove", "rmdir", "unlink", "spawn",
-                "execv", "execve", "fork", "kill"}
-DANGER_MODULES = {"subprocess", "socket", "shutil", "ctypes", "pty", "requests",
-                  "urllib", "http", "importlib"}
+# A fixed Flask handler only needs plain request logic (ifs, current_user(),
+# jsonify, dict lookups). Anything that reaches the host, the interpreter, or
+# attribute internals is refused outright -- a deny-by-shape rule, so there is
+# no clever spelling that slips past a name blocklist.
+FORBIDDEN_NAMES = {"os", "sys", "open", "getattr", "setattr", "delattr", "eval",
+                   "exec", "compile", "globals", "locals", "vars", "input",
+                   "breakpoint", "memoryview", "subprocess", "socket", "shutil",
+                   "importlib", "builtins", "ctypes", "pty", "pathlib", "io"}
 
 
 def _scan_dangerous(func_node) -> str:
-    """Reason string if the function body uses a disallowed operation, else ''.
-    Guards against a patch that tries to run shell commands, open sockets, touch
-    the filesystem, or import risky modules."""
-    import ast as _ast
-    for n in _ast.walk(func_node):
-        if isinstance(n, _ast.Call):
-            f = n.func
-            if isinstance(f, _ast.Name) and f.id in DANGER_CALLS:
-                return f"disallowed call: {f.id}()"
-            if isinstance(f, _ast.Attribute) and f.attr in DANGER_ATTRS:
-                return f"disallowed call: .{f.attr}()"
-        if isinstance(n, (_ast.Import, _ast.ImportFrom)):
-            mod = n.module if isinstance(n, _ast.ImportFrom) else (
-                n.names[0].name if n.names else "")
-            root = (mod or "").split(".")[0]
-            if root in DANGER_MODULES:
-                return f"disallowed import: {root}"
+    """Reason string if the patched handler does anything beyond plain request
+    logic, else ''."""
+    for n in ast.walk(func_node):
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
+            return "disallowed: import inside handler"
+        if isinstance(n, (ast.Global, ast.Nonlocal)):
+            return "disallowed: global/nonlocal"
+        if isinstance(n, ast.Name) and (n.id in FORBIDDEN_NAMES or n.id.startswith("__")):
+            return f"disallowed name: {n.id}"
+        if isinstance(n, ast.Attribute) and n.attr.startswith("_"):
+            return f"disallowed attribute: .{n.attr}"
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and "__" in n.value:
+            return "disallowed: dunder string"
     return ""
 
 

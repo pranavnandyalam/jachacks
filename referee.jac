@@ -98,7 +98,10 @@ def verify(new_source: str, target_req: AttackReq) -> Verdict {
         );
     }
 
-    exploit_blocked = len(res.attacks) > 0 and not res.attacks[0].breached;
+    # A handler that crashes (500 / exception) leaks nothing but is still broken,
+    # so it does not count as closing the hole.
+    target_crashed = len(res.attacks) > 0 and (res.attacks[0].status >= 500 or res.attacks[0].error != "");
+    exploit_blocked = len(res.attacks) > 0 and not res.attacks[0].breached and not target_crashed;
     regressions_ok = True;
     leaked_paths = [];
     i = 1;
@@ -113,8 +116,11 @@ def verify(new_source: str, target_req: AttackReq) -> Verdict {
     accepted = exploit_blocked and regressions_ok and health_ok;
 
     reason = "accepted: exploit closed, no regressions, health green";
-    if not exploit_blocked {
-        reason = f"rejected: the exploit ({target_req.method} {target_req.path}) still breaches";
+    if target_crashed {
+        reason = f"rejected: the patched handler crashes on {target_req.method} {target_req.path} (status {res.attacks[0].status}) -- refuse with 401/403, don't error";
+    } elif not exploit_blocked {
+        who = f"as {target_req.as_user}, an already-logged-in low-privilege user -- so a login check alone is NOT enough; restrict it to the owner or an admin role" if target_req.as_user else "anonymously";
+        reason = f"rejected: the exploit ({target_req.method} {target_req.path}) still breaches -- the request sent {who}";
     } elif not regressions_ok {
         reason = f"rejected: reopened previously-closed holes: {leaked_paths}";
     } elif not health_ok {
@@ -158,6 +164,7 @@ test "verify rejects a no-op patch that leaves the hole open" {
     v = verify(_seed(), req);
     assert not v.exploit_blocked;
     assert not v.accepted;
+    assert "login check alone is NOT enough" in v.reason;
 }
 
 test "verify rejects a patch that breaks health" {
@@ -192,4 +199,19 @@ test "record_exploit dedupes by method+path+user" {
     record_exploit(r, "DEBUG_LEAK", 1);
     record_exploit(r, "DEBUG_LEAK", 2);
     assert len(confirmed_exploits()) == 1;
+}
+
+test "verify rejects a patch whose handler crashes instead of refusing" {
+    reset_referee();
+    # references an undefined helper -> NameError -> 500. Leaks nothing, but the
+    # app is broken, so it must not count as a fix.
+    crashing = _seed().replace(
+        "    if app.config[\"DEBUG_MODE\"]:\n",
+        "    if not is_admin(current_user()):\n        return jsonify({\"error\": \"forbidden\"}), 403\n    if app.config[\"DEBUG_MODE\"]:\n"
+    );
+    req = AttackReq(method="GET", path="/debug", as_user="");
+    v = verify(crashing, req);
+    assert not v.exploit_blocked;
+    assert not v.accepted;
+    assert "crash" in v.reason;
 }

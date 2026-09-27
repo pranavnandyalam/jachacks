@@ -24,7 +24,7 @@ import from sandbox { AttackReq, resolve_func, splice_function }
 
 glob MAX_ROUNDS: int = 14;
 glob MAX_MISSES: int = 5;
-glob SETTLED_MISSES: int = 2;
+glob SETTLED_MISSES: int = 3;
 glob MAX_PATCH_ATTEMPTS: int = 6;
 
 node Arena {
@@ -151,20 +151,51 @@ def:pub reset_game -> int {
     return n;
 }
 
+obj Confined {
+    has source: str,
+        note: str;
+}
+
 """Keep ONLY the exploited handler's change from Blue's full-file rewrite. Any
-other edit Blue made is discarded. Falls back to the full rewrite only if the
-handler can't be resolved or the splice fails."""
-def _confine(current: str, patched: str, func: str) -> str {
+other edit Blue made is discarded. If nothing usable survives (handler unknown,
+splice blocked/failed, or every edit was outside the handler) the current source
+is returned unchanged plus a `note` saying why, so Blue gets told the real
+reason instead of a generic 'still breaches'."""
+def _confine(current: str, patched: str, func: str) -> Confined {
     if not func {
-        return patched;
+        return Confined(source=current, note="could not tell which handler serves this request");
     }
     sr = splice_function(current, patched, func);
     if sr.error or not sr.source {
-        # Blocked (disallowed op) or splice failed: apply NOTHING. The unchanged
-        # source still breaches, so the referee rejects it and Blue retries.
-        return current;
+        return Confined(source=current, note=f"draft discarded: {sr.error}");
     }
-    return sr.source;
+    if sr.source == current {
+        return Confined(
+            source=current,
+            note=f"your changes were all OUTSIDE the {func}() function, and only edits inside {func}() are kept -- put the check inside {func}() itself (e.g. refuse with 403 unless the user is an admin)"
+        );
+    }
+    return Confined(source=sr.source, note="");
+}
+
+obj Judged {
+    has candidate: str,
+        verdict: Verdict;
+}
+
+"""Judge one Blue draft: confine it to `func`, then run the referee. A confine
+note overrides the referee's reason, since it's the real cause."""
+def _judge(src: str, patch: Patch, func: str, target_req: AttackReq) -> Judged {
+    c = _confine(src, patch.new_source, func);
+    v = verify(c.source, target_req);
+    if c.note and not v.accepted {
+        v = Verdict(
+            accepted=False, exploit_blocked=v.exploit_blocked,
+            regressions_ok=v.regressions_ok, health_ok=v.health_ok,
+            reason=f"rejected: {c.note}"
+        );
+    }
+    return Judged(candidate=c.source, verdict=v);
 }
 
 """Log a patch the referee rejected, so its failure mode is inspectable later."""
@@ -191,15 +222,17 @@ def _blue_defend(red: AttackResult, round_n: int) -> GameRound {
 
     feedback = "";
     patch = make_patch(src, brief, feedback, 1);
-    candidate = _confine(src, patch.new_source, func);
-    verdict = verify(candidate, target_req);
+    j = _judge(src, patch, func, target_req);
+    candidate = j.candidate;
+    verdict = j.verdict;
     attempts = 1;
     while not verdict.accepted and attempts < MAX_PATCH_ATTEMPTS {
         record_rejected(round_n, red.path, attempts, verdict.reason, patch);
         feedback = f"Attempt {attempts} was REJECTED: {verdict.reason}. Return the COMPLETE valid Python file. Change ONLY the {func} handler for {red.path}; leave every other line byte-for-byte identical.";
         patch = make_patch(src, brief, feedback, attempts + 1);
-        candidate = _confine(src, patch.new_source, func);
-        verdict = verify(candidate, target_req);
+        j = _judge(src, patch, func, target_req);
+        candidate = j.candidate;
+        verdict = j.verdict;
         attempts += 1;
     }
 
@@ -379,3 +412,24 @@ test "reset_game seeds a clean arena at version 0" {
     assert st.rounds_played == 0;
     assert st.current_version == 0;
 }
+
+test "confine explains a draft whose only edit is outside the handler" {
+    reset_game();
+    src = current_source();
+    outside = src.replace("app.config[\"DEBUG_MODE\"] = True", "app.config[\"DEBUG_MODE\"] = False");
+    c = _confine(src, outside, "debug");
+    assert c.source == src;
+    assert "OUTSIDE" in c.note;
+}
+
+test "confine explains a blocked draft and keeps a good one" {
+    reset_game();
+    src = current_source();
+    bad = src.replace("    # TODO: check ownership\n", "    os.system(\"true\")\n");
+    assert "discarded" in _confine(src, bad, "get_invoice").note;
+    good = src.replace("    # TODO: check ownership\n", "    if inv[\"owner\"] != user[\"name\"]:\n        return jsonify({}), 403\n");
+    c = _confine(src, good, "get_invoice");
+    assert c.note == "";
+    assert "403" in c.source;
+}
+
