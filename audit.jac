@@ -29,20 +29,35 @@ obj Vuln {
 }
 sem Vuln = "One HTTP request that, because of a flaw in the code, leaks protected data or performs an action the caller should not be allowed to.";
 sem Vuln.method = "HTTP method: GET, POST, etc.";
-sem Vuln.path = "Exact URL path from a route in the code, e.g. /members/admin/notes.";
+sem Vuln.path = "The concrete URL to request, with real values filled in, e.g. /members/admin/notes, /lists/3 or /search?q=key. Never a route template like <name> or {id}.";
 sem Vuln.as_user = "The username to send as (a low-privilege user), or empty string for no login.";
 sem Vuln.vuln_class = "Short label: IDOR, MISSING_ADMIN_CHECK, DEBUG_LEAK, SECRET_EXPOSURE, etc.";
 sem Vuln.why = "One sentence: which file and line look wrong and why this request leaks the secret.";
 
 obj VulnReport {
-    has vulns: list[Vuln];
+    has routes: list[str],
+        vulns: list[Vuln];
 }
-sem VulnReport = "Every distinct weakness you can find, one entry each.";
+sem VulnReport = "First every route in the app, then every distinct weakness among them, one entry each.";
+sem VulnReport.routes = "EVERY route defined anywhere in the code (method and path), listed before judging any of them.";
 
 sem find_vulns = "You are Red, a white-box security auditor. You are given the full source of a small web app (one or more files) and a note on what secret to make it leak. Read ALL the files and list EVERY distinct request a low-privilege caller could use to read protected data (another user's records, admin-only data, secrets, tokens, password hashes) or to perform a forbidden action (change or delete another user's data, admin-only operations), because of a missing login, role or ownership check, an unprotected endpoint, or a leak. Check every route, including write routes (POST, PUT, PATCH, DELETE). One entry per weakness; do not repeat the same endpoint.";
 sem find_vulns.code = "The full source of the target app, each file under a '=== FILE: name ===' header.";
 sem find_vulns.hint = "Who you are logged in as and what secret to look for.";
 def find_vulns(code: str, hint: str) -> VulnReport by scanner(temperature=0.3);
+
+glob RED_SCANS: int = 2;
+
+"""Red reads the code RED_SCANS times and the candidate lists are merged (the
+referee dedupes and confirms). One read misses holes at random; two reads
+catch most of what either would, for a couple of seconds more."""
+def red_scan(code: str) -> list[Vuln] {
+    out: list[Vuln] = [];
+    for _ in range(RED_SCANS) {
+        out = out + find_vulns(code, secret_hint()).vulns;
+    }
+    return out;
+}
 
 # ---- Blue: fix everything in one pass ---------------------------------------
 
@@ -180,19 +195,60 @@ obj AuditReport {
         findings: list[Finding];
 }
 
-"""Keep only the candidate vulns that actually leak the secret, deduped by
-(method, path, user)."""
+glob PROBE_IDS: list[str] = ["1", "2", "3", "4", "5"];
+glob MAX_VARIANTS: int = 30;
+
+def _is_placeholder(seg: str) -> bool {
+    return (seg.startswith("<") and seg.endswith(">")) or (seg.startswith("{") and seg.endswith("}")) or seg.startswith(":");
+}
+
+"""The candidate plus the same request aimed at other victims: a username in
+the path is swapped for each other known user (Red may read bob's notes when
+the secret is in admin's), and a route-template slot (<name>, {id}, :id) is
+filled with each user and a few ids. Same missing check, different target."""
+def victim_variants(v: Vuln) -> list[Vuln] {
+    users: list[str] = read_manifest().get("users", []);
+    base = v.path.split("?")[0];
+    query = v.path[len(base):];
+    paths: list[str] = [base];
+    for (i, seg) in enumerate(base.split("/")) {
+        values: list[str] = [];
+        if _is_placeholder(seg) {
+            values = users + PROBE_IDS;
+        } elif seg in users {
+            values = [u for u in users if u != seg];
+        }
+        grown: list[str] = [];
+        for p in paths {
+            parts = p.split("/");
+            if not _is_placeholder(seg) {
+                grown = grown + [p];
+            }
+            for val in values {
+                grown = grown + ["/".join(parts[:i] + [val] + parts[i + 1:])];
+            }
+        }
+        paths = grown[:MAX_VARIANTS];
+    }
+    return [Vuln(method=v.method, path=p + query, as_user=v.as_user, vuln_class=v.vuln_class, why=v.why) for p in paths];
+}
+
+"""Keep only the candidate vulns that actually leak the secret (trying each
+victim variant), deduped by (method, path, user)."""
 def confirm_vulns(files: dict[str, str], candidates: list[Vuln]) -> list[Vuln] {
     seen: list[str] = [];
     confirmed: list[Vuln] = [];
-    for v in candidates {
-        key = v.method + " " + v.path + " " + v.as_user;
-        if key in seen {
-            continue;
-        }
-        seen = seen + [key];
-        if breaches(files, vuln_to_req(v)) {
-            confirmed = confirmed + [v];
+    for cand in candidates {
+        for v in victim_variants(cand) {
+            key = v.method + " " + v.path + " " + v.as_user;
+            if key in seen {
+                continue;
+            }
+            seen = seen + [key];
+            if breaches(files, vuln_to_req(v)) {
+                confirmed = confirmed + [v];
+                break;
+            }
         }
     }
     return confirmed;
@@ -460,6 +516,9 @@ test "static mode: route matching, dedupe, backend filter (no LLM)" {
     assert traced_status("checks owner_id... so it returns a 404 error", 200) == 404;
     assert traced_status("role is admin, returns 200 with all users", 403) == 200;
     assert traced_status("no code mentioned", 403) == 403;
+    t = Vuln(method="GET", path="/lists/<int:list_id>", as_user="alice", vuln_class="x", why="y");
+    assert "/lists/3" in [x.path for x in victim_variants(t)];
+    assert "/lists/<int:list_id>" not in [x.path for x in victim_variants(t)];
 }
 
 # ---- looping audit: keep fixing until a pass finds nothing -------------------
@@ -566,8 +625,7 @@ def:pub audit_step -> None {
     blob = files_blob(files);
 
     live_begin("scan", n);
-    scan = find_vulns(blob, secret_hint());
-    confirmed = confirm_vulns(files, scan.vulns)[:MAX_PER_PASS];
+    confirmed = confirm_vulns(files, red_scan(blob))[:MAX_PER_PASS];
 
     fixed = files;
     summary = "";
@@ -583,11 +641,11 @@ def:pub audit_step -> None {
             f"- {v.method} {v.path} as {v.as_user if v.as_user else 'anon'} [{v.vuln_class}]: {v.why}"
             for v in confirmed
         ]);
-        patch = fix_all(blob, exploit_lines);
-        fixed = apply_edits(files, patch.edits);
-        rep = verify_fixes(fixed, confirmed);
-        summary = patch.summary;
-        changed = [e.path for e in patch.edits];
+        gated = gated_fix(files, blob, exploit_lines, confirmed);
+        fixed = gated.files;
+        rep = gated.verdict;
+        summary = gated.summary;
+        changed = gated.changed;
     } else {
         rep.health_ok = run_sandbox_files(files, [], True).health.ok;
         summary = "No vulnerabilities found in this pass.";
@@ -619,7 +677,7 @@ def static_step(a: Auditor) -> None {
     n = a.passes_done + 1;
     files = _files_from_json(a.working_json);
     live_begin("scan", n);
-    candidates = find_vulns(backend_blob(files), secret_hint()).vulns;
+    candidates = red_scan(backend_blob(files));
     live_event(f"Red flagged {len(candidates)} route(s); the referee is checking each against the code.");
     conf = confirm_static(files, candidates, MAX_PER_PASS);
     vulns = conf.vulns;
@@ -673,6 +731,40 @@ def static_step(a: Auditor) -> None {
     if len(vulns) == 0 or len(changed) == 0 or n >= STATIC_MAX_PASSES {
         a.finished = True;
     }
+}
+
+obj GatedFix {
+    has files: dict[str, str],
+        verdict: AuditReport,
+        summary: str,
+        changed: list[str];
+}
+
+glob FLASK_FIX_TRIES: int = 2;
+
+"""Referee gate for runnable apps: keep Blue's patch only if the app's health
+checks still pass AND it closes at least one confirmed exploit. Otherwise
+retry once with the rejection as feedback; if that fails too, discard the
+patch so the working copy never goes live broken."""
+def gated_fix(files: dict[str, str], blob: str, exploit_lines: str, confirmed: list[Vuln]) -> GatedFix {
+    feedback = "";
+    for attempt in range(FLASK_FIX_TRIES) {
+        live_draft(attempt + 1);
+        patch = fix_all(blob, exploit_lines + feedback);
+        fixed = apply_edits(files, patch.edits);
+        rep = verify_fixes(fixed, confirmed);
+        if rep.health_ok and rep.fixed > 0 {
+            return GatedFix(files=fixed, verdict=rep, summary=patch.summary,
+                            changed=[p for p in files.keys() if fixed.get(p) != files[p]]);
+        }
+        why = "it broke the app's normal behavior (health checks failed)" if not rep.health_ok else "the exploits still worked";
+        feedback = f"\nYour previous patch was REJECTED by the referee because {why}. Fix the holes while keeping legitimate requests working.";
+        live_event(f"Referee rejected Blue's patch: {why}. Retrying.");
+    }
+    kept = verify_fixes(files, confirmed);
+    kept.health_ok = True;
+    return GatedFix(files=files, verdict=kept, changed=[],
+                    summary="The referee rejected Blue's patches (they broke the app or didn't close the holes), so the code was left unchanged.");
 }
 
 """Reseed the working copy from the target on disk and clear all passes."""
