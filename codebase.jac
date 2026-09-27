@@ -7,8 +7,7 @@ evidence that security evolved -- every diff is replayable from the graph.
 
 import os;
 import difflib;
-
-glob TARGET_SOURCE: str = "target/app.py";
+import from config { target_source_path }
 
 node Codebase {
     has name: str = "target",
@@ -39,7 +38,7 @@ def codebase -> Codebase {
         return found[0];
     }
     cb = root ++> Codebase(name="target", head=0);
-    seed = open(TARGET_SOURCE).read();
+    seed = open(target_source_path()).read();
     cb ++> CodeVersion(version=0, source=seed, author="seed", summary="original vibecoded app");
     return cb;
 }

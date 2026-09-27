@@ -10,8 +10,8 @@ import sys;
 import json;
 import tempfile;
 import subprocess;
+import from config { target_manifest_path }
 
-glob TARGET_MANIFEST: str = "target/manifest.json";
 glob RUNNER: str = "sandbox/runner.py";
 glob EDITOR: str = "sandbox/edit.py";
 glob SANDBOX_TIMEOUT: int = 15;
@@ -73,7 +73,7 @@ def run_sandbox(source: str, attacks: list[AttackReq], health: bool = False) -> 
 
     job = {
         "source_file": src_path,
-        "manifest_file": os.path.abspath(TARGET_MANIFEST),
+        "manifest_file": os.path.abspath(target_manifest_path()),
         "attacks": [_attack_to_dict(a) for a in attacks],
         "health": health
     };

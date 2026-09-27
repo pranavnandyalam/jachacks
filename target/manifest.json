@@ -2,16 +2,79 @@
   "name": "ledgerly-py",
   "entry": "app.py",
   "app_var": "app",
-  "users": ["alice", "bob", "admin"],
+  "users": [
+    "alice",
+    "bob",
+    "admin"
+  ],
   "attacker": "alice",
+  "secret_hint": "A secret flag is stored on the admin's records and in the app config. Some endpoints may fail to check who is asking.",
   "health_checks": [
-    {"name": "public health", "method": "GET", "path": "/health", "as": null, "expect_status": 200},
-    {"name": "alice sees own profile", "method": "GET", "path": "/me", "as": "alice", "expect_status": 200, "expect_contains": "alice"},
-    {"name": "alice reads own invoice", "method": "GET", "path": "/invoices/INV-1001", "as": "alice", "expect_status": 200, "expect_contains": "INV-1001"},
-    {"name": "alice lists own invoices", "method": "GET", "path": "/invoices", "as": "alice", "expect_status": 200, "expect_contains": "INV-1001"},
-    {"name": "bob reads own invoice", "method": "GET", "path": "/invoices/INV-1002", "as": "bob", "expect_status": 200, "expect_contains": "INV-1002"},
-    {"name": "alice creates an invoice", "method": "POST", "path": "/invoices", "as": "alice", "body": {"amount": 5, "note": "x"}, "expect_status": 201},
-    {"name": "admin reads admin invoice", "method": "GET", "path": "/invoices/INV-0001", "as": "admin", "expect_status": 200, "expect_contains": "{FLAG}"},
-    {"name": "admin lists all invoices", "method": "GET", "path": "/admin/invoices", "as": "admin", "expect_status": 200, "expect_contains": "{FLAG}"}
+    {
+      "name": "public health",
+      "method": "GET",
+      "path": "/health",
+      "as": null,
+      "expect_status": 200
+    },
+    {
+      "name": "alice sees own profile",
+      "method": "GET",
+      "path": "/me",
+      "as": "alice",
+      "expect_status": 200,
+      "expect_contains": "alice"
+    },
+    {
+      "name": "alice reads own invoice",
+      "method": "GET",
+      "path": "/invoices/INV-1001",
+      "as": "alice",
+      "expect_status": 200,
+      "expect_contains": "INV-1001"
+    },
+    {
+      "name": "alice lists own invoices",
+      "method": "GET",
+      "path": "/invoices",
+      "as": "alice",
+      "expect_status": 200,
+      "expect_contains": "INV-1001"
+    },
+    {
+      "name": "bob reads own invoice",
+      "method": "GET",
+      "path": "/invoices/INV-1002",
+      "as": "bob",
+      "expect_status": 200,
+      "expect_contains": "INV-1002"
+    },
+    {
+      "name": "alice creates an invoice",
+      "method": "POST",
+      "path": "/invoices",
+      "as": "alice",
+      "body": {
+        "amount": 5,
+        "note": "x"
+      },
+      "expect_status": 201
+    },
+    {
+      "name": "admin reads admin invoice",
+      "method": "GET",
+      "path": "/invoices/INV-0001",
+      "as": "admin",
+      "expect_status": 200,
+      "expect_contains": "{FLAG}"
+    },
+    {
+      "name": "admin lists all invoices",
+      "method": "GET",
+      "path": "/admin/invoices",
+      "as": "admin",
+      "expect_status": 200,
+      "expect_contains": "{FLAG}"
+    }
   ]
 }

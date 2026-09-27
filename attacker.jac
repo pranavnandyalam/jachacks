@@ -12,17 +12,18 @@ import json;
 
 import from jaclang.byllm.lib { Model }
 import from sandbox { AttackReq, run_one_attack }
+import from config { attacker_user, secret_hint }
 
 glob attacker: Model = Model(model_name="ollama_chat/huihui_ai/qwen3-coder-abliterated");
 
-glob ATTACKER_USER: str = "alice";
+glob ATTACKER_USER: str = attacker_user();
 
 enum Identity {
     ATTACKER,
     ANON
 }
 sem Identity = "Who Red sends the request as. It only holds ONE real credential.";
-sem Identity.ATTACKER = "Red's own low-privilege user account (alice). Use this to test whether the code lets a normal logged-in user reach data that is not theirs.";
+sem Identity.ATTACKER = "Red's own low-privilege user account. Use this to test whether the code lets a normal logged-in user reach data that is not theirs.";
 sem Identity.ANON = "No credentials at all. Use this to test whether an endpoint that should require login or admin is reachable unauthenticated.";
 
 obj Attack {
@@ -35,16 +36,17 @@ obj Attack {
 }
 sem Attack = "A single HTTP request to try against the app this turn.";
 sem Attack.method = "HTTP method: GET, POST, etc.";
-sem Attack.path = "The exact URL path to request, taken from a route in the source, e.g. /invoices/INV-0001.";
-sem Attack.identity = "Which identity to send as -- ATTACKER (alice) or ANON.";
+sem Attack.path = "The exact URL path to request, taken verbatim from a route in the source.";
+sem Attack.identity = "Which identity to send as -- ATTACKER (your own account) or ANON.";
 sem Attack.body_json = "JSON object as a string for POST/PUT bodies, else empty string.";
 sem Attack.vuln_class = "The weakness class you are testing: IDOR, BROKEN_ACCESS, DEBUG_LEAK, SECRET_EXPOSURE, or similar.";
 sem Attack.hypothesis = "One sentence: which line(s) of code look wrong and why this request should leak protected data. Target a weakness you have NOT already breached.";
 
-sem plan_attack = "You are Red, a white-box offensive-security agent. You are given the full source of a small Flask app and your memory of what you already tried. A hidden flag lives on the admin's invoice INV-0001 and in the app config. You are logged in only as the low-privilege user 'alice' (you own INV-1001). Read the code, find a MISSING authorization/ownership check or a leak, and return the single request most likely to make the app return the flag to you. Prefer a weakness you have not already breached.";
+sem plan_attack = "You are Red, a white-box offensive-security agent. You are given the full source of a small web app, a note on the secret you are trying to make it leak, and your memory of what you already tried. Read the code, find a MISSING authorization/ownership check, an endpoint that skips a login or role check, or any other leak, and return the single HTTP request most likely to make the app return that secret to you. Prefer a weakness you have not already breached.";
 sem plan_attack.source = "The full current source of the target app.";
+sem plan_attack.context = "What you are logged in as and what secret to try to leak. This is all you are told about the target -- it names no specific bug.";
 sem plan_attack.memory = "What Red already tried this game and whether each breached.";
-def plan_attack(source: str, memory: str) -> Attack by attacker(temperature=0.4);
+def plan_attack(source: str, context: str, memory: str) -> Attack by attacker(temperature=0.4);
 
 node RedAgent {
     has name: str = "red",
@@ -147,7 +149,7 @@ def record_attempt(a: Attack, breached: bool, round_n: int) -> Attempt {
 def run_red_turn(source: str, round_n: int = 0) -> AttackResult {
     ra = red_agent();
     ra.turns += 1;
-    attack = plan_attack(source, red_memory());
+    attack = plan_attack(source, secret_hint(), red_memory());
     outcome = run_one_attack(source, attack_to_req(attack));
     record_attempt(attack, outcome.breached, round_n);
     note = outcome.error if outcome.error else outcome.body[:160];
@@ -172,7 +174,7 @@ def reset_red -> int {
 # ---- deterministic tests (no LLM) --------------------------------------------
 
 def _seed -> str {
-    s = open("target/app.py").read();
+    s = open("target/app.py").read();  # tests pin the shipped invoice app
     return s;
 }
 
