@@ -1,0 +1,20 @@
+{
+  "name": "Deployment Dashboard",
+  "entry": "main.go",
+  "app_var": "app",
+  "mode": "scan",
+  "files": [
+    "main.go",
+    "public/index.html",
+    "public/app.js",
+    "public/style.css"
+  ],
+  "users": [
+    "alice",
+    "bob",
+    "admin"
+  ],
+  "attacker": "alice",
+  "secret_hint": "Debug configuration and admin credentials must never be reachable by a low-privilege or anonymous caller.",
+  "health_checks": []
+}

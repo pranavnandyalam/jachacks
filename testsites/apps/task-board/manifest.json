@@ -1,0 +1,20 @@
+{
+  "name": "Task Board",
+  "entry": "src/server.ts",
+  "app_var": "app",
+  "mode": "scan",
+  "files": [
+    "src/server.ts",
+    "public/index.html",
+    "public/app.js",
+    "public/style.css"
+  ],
+  "users": [
+    "alice",
+    "bob",
+    "admin"
+  ],
+  "attacker": "alice",
+  "secret_hint": "Another user's private tasks and admin-only user management must be out of reach for a normal member.",
+  "health_checks": []
+}

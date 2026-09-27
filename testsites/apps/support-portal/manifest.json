@@ -2,8 +2,12 @@
   "name": "Support Portal",
   "entry": "app.py",
   "app_var": "app",
+  "mode": "scan",
   "files": [
-    "app.py"
+    "app.py",
+    "public/index.html",
+    "public/app.js",
+    "public/style.css"
   ],
   "users": [
     "alice",
@@ -12,6 +16,5 @@
   ],
   "attacker": "alice",
   "secret_hint": "An internal service token and other users' private tickets should never reach a low-privilege or anonymous caller.",
-  "health_checks": [],
-  "mode": "scan"
+  "health_checks": []
 }

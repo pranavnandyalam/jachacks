@@ -54,11 +54,13 @@ def:pub list_targets -> list[TargetInfo] {
     if os.path.isfile(os.path.join("target", "manifest.json")) {
         dirs = dirs + ["target"];
     }
-    if os.path.isdir("targets") {
-        for d in sorted(os.listdir("targets")) {
-            full = os.path.join("targets", d);
-            if os.path.isfile(os.path.join(full, "manifest.json")) {
-                dirs = dirs + [full];
+    for base in ["targets", "testsites/apps"] {
+        if os.path.isdir(base) {
+            for d in sorted(os.listdir(base)) {
+                full = os.path.join(base, d);
+                if os.path.isfile(os.path.join(full, "manifest.json")) {
+                    dirs = dirs + [full];
+                }
             }
         }
     }
