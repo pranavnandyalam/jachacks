@@ -3,6 +3,7 @@ TypeScript, FastAPI): apply Blue's small find/replace edits to a file map, and
 syntax-check the result with each language's own parser. No LLM here."""
 
 import os;
+import re;
 import shutil;
 import subprocess;
 import sys;
@@ -182,10 +183,11 @@ test "syntax_error catches broken Python, Go and TypeScript" {
 
 # ---- locate a route's handler in any language (no LLM) ----------------------
 
-import re;
 
 glob ROUTE_LITERAL: str = "[\"'`]([A-Z]+ )?(/[^\"'`\\s]*)[\"'`]";
-glob ROUTE_DEF_HINTS: list[str] = ["app.get(", "app.post(", "app.put(", "app.patch(", "app.delete(", "@app.", "mux.HandleFunc(", "router.", "@bp.", ".route("];
+# A route definition in Express/Flask/FastAPI (`app.get(`, `@members.get(`,
+# `router.post(`, `.route(`) or Go (`mux.HandleFunc(`).
+glob ROUTE_DEF: str = "(\\.(get|post|put|patch|delete|route|api_route)\\s*\\(\\s*[\"'`]/|HandleFunc\\s*\\(\\s*[\"'`])";
 glob HANDLER_MAX_LINES: int = 40;
 
 def _is_slot(seg: str) -> bool {
@@ -209,7 +211,7 @@ def route_matches(template: str, path: str) -> bool {
 }
 
 def _defines_route(line: str) -> bool {
-    return any(h in line for h in ROUTE_DEF_HINTS);
+    return re.search(ROUTE_DEF, line) is not None;
 }
 
 """The verbatim source of the handler for METHOD PATH: the route-definition
@@ -247,4 +249,8 @@ test "find_handler picks the exact route in TS, Go and Python" {
     assert "def get_user" in find_handler({"app.py": py}, "GET", "/api/users/2");
     assert find_handler({"app.py": py}, "GET", "/nope") == "";
     assert route_matches("/lists/<int:list_id>", "/lists/3");
+    bp = "@members.get(\"/members/<name>/notes\")\ndef member_notes(name):\n    return 1\n";
+    assert "member_notes" in find_handler({"members.py": bp}, "GET", "/members/admin/notes");
+    tsq = "app.get('/api/tasks/:id', (req, res) => {\n  const t = db.prepare('SELECT 1').get(req.params.id);\n  res.json(t);\n});\n";
+    assert "res.json(t)" in find_handler({"s.ts": tsq}, "GET", "/api/tasks/5");
 }

@@ -13,6 +13,7 @@ import from config { read_manifest, target_source_path, secret_hint, policy, tar
 import from sandbox { AttackReq, run_sandbox_files }
 import from live { live_begin, live_draft, live_event, live_end }
 import from codecheck { apply_code_edits, syntax_errors, find_handler, resolve_path }
+import from audit_graph { graph_clear, graph_seed_files, graph_record_pass }
 import from llm { LLM_MODEL }
 
 glob scanner: Model = Model(model_name=LLM_MODEL);
@@ -491,7 +492,12 @@ def confirm_static(files: dict[str, str], candidates: list[Vuln], limit: int) ->
 obj StaticFix {
     has files: dict[str, str],
         summary: str,
-        changed: list[str];
+        changed: list[str],
+        attempts: list[dict[str, any]] = [];
+}
+
+def _attempt(n: int, verdict: str, reason: str, summary: str, changed: list[str]) -> dict[str, any] {
+    return {"attempt": n, "verdict": verdict, "reason": reason, "summary": summary, "changed": changed};
 }
 
 """Blue patches the backend with small edits; keep the result only if every
@@ -502,26 +508,30 @@ def static_fix(files: dict[str, str], vulns: list[Vuln], n: int) -> StaticFix {
     code = backend_blob(files);
     lines = exploit_lines(vulns);
     feedback = "";
+    tried: list[dict[str, any]] = [];
     for attempt in range(STATIC_FIX_TRIES) {
         live_draft(attempt + 1);
         plan = fix_by_edits(code, lines, policy(), feedback);
         res = apply_code_edits(files, [(e.path, e.find, e.replace) for e in plan.edits], backend);
         changed = [p for p in files.keys() if res.files[p] != files[p]];
         if not changed {
+            tried = tried + [_attempt(attempt + 1, "rejected", "edits didn't match the code", plan.summary, [])];
             feedback = "None of your edits matched the code. Copy each find block EXACTLY from the file.";
             live_event(f"Pass {n}: Blue's edit didn't match the code, retrying.");
             continue;
         }
         err = syntax_errors(res.files, changed);
         if err {
+            tried = tried + [_attempt(attempt + 1, "rejected", "patch didn't compile: " + err[:200], plan.summary, changed)];
             feedback = "Your edit broke the code, so it was discarded: " + err;
             live_event(f"Pass {n}: Blue's patch didn't compile, retrying.");
             continue;
         }
-        return StaticFix(files=res.files, summary=plan.summary, changed=changed);
+        tried = tried + [_attempt(attempt + 1, "accepted", "applies cleanly and compiles", plan.summary, changed)];
+        return StaticFix(files=res.files, summary=plan.summary, changed=changed, attempts=tried);
     }
     return StaticFix(
-        files=files, changed=[],
+        files=files, changed=[], attempts=tried,
         summary="Blue couldn't produce a patch that applies and compiles, so nothing was changed."
     );
 }
@@ -614,13 +624,13 @@ def auditor -> Auditor {
 }
 
 def _reseed(a: Auditor, dir: str) -> None {
-    for p in [a ->:Did:->[?:Pass]] {
-        del p;
-    }
+    graph_clear(a);
+    files = read_target_files();
     a.passes_done = 0;
     a.finished = False;
-    a.working_json = _files_to_json(read_target_files());
+    a.working_json = _files_to_json(files);
     a.target_dir = dir;
+    graph_seed_files(a, files);
 }
 
 def audit_passes -> list[Pass] {
@@ -664,6 +674,7 @@ def:pub audit_step -> None {
     fixed = files;
     summary = "";
     changed: list[str] = [];
+    attempts: list[dict[str, any]] = [];
     rep = AuditReport(
         target=target_name(), files=list(files.keys()), found=0, fixed=0,
         still_open=0, health_ok=True, summary="", files_changed=[], findings=[]
@@ -680,6 +691,7 @@ def:pub audit_step -> None {
         rep = gated.verdict;
         summary = gated.summary;
         changed = gated.changed;
+        attempts = gated.attempts;
     } else {
         rep.health_ok = run_sandbox_files(files, [], True).health.ok;
         summary = "No vulnerabilities found in this pass.";
@@ -693,12 +705,14 @@ def:pub audit_step -> None {
          "vuln_class": f.vuln_class, "why": f.why, "closed": f.closed}
         for f in rep.findings
     ]);
-    auditor() +>:Did():+> Pass(
+    pnode = Pass(
         n=n, found=rep.found, fixed=rep.fixed, still_open=rep.still_open,
         health_ok=rep.health_ok, summary=summary,
         files_changed_json=json.dumps(changed), findings_json=findings_j,
         diffs_json=_diffs(files, fixed)
     );
+    a +>:Did():+> pnode;
+    graph_record_pass(a, pnode, n, files, fixed, json.loads(findings_j), attempts, False);
     if len(confirmed) == 0 or n >= MAX_PASSES {
         a.finished = True;
     }
@@ -718,6 +732,7 @@ def static_step(a: Auditor) -> None {
     fixed = files;
     summary = "No vulnerabilities found in this pass.";
     changed: list[str] = [];
+    attempts: list[dict[str, any]] = [];
     findings: list[Finding] = [];
     if vulns {
         live_begin("fix", n);
@@ -726,6 +741,7 @@ def static_step(a: Auditor) -> None {
         fixed = sf.files;
         summary = sf.summary;
         changed = sf.changed;
+        attempts = sf.attempts;
         live_begin("scan", n);
         live_event("The referee is re-checking each hole against the patched code.");
         findings = static_findings(fixed, vulns, len(changed) > 0);
@@ -754,12 +770,14 @@ def static_step(a: Auditor) -> None {
          "vuln_class": f.vuln_class, "why": f.why, "closed": f.closed}
         for f in findings
     ]);
-    auditor() +>:Did():+> Pass(
+    pnode = Pass(
         n=n, found=len(vulns), fixed=closed_n, still_open=len(vulns) - closed_n,
         health_ok=True, summary=summary,
         files_changed_json=json.dumps(changed), findings_json=findings_j,
         diffs_json=_diffs(files, fixed)
     );
+    a +>:Did():+> pnode;
+    graph_record_pass(a, pnode, n, files, fixed, json.loads(findings_j), attempts, disputed);
     # Done when a scan comes back clean, Blue is stuck (changed nothing), or
     # the cap -- same as runnable apps, so a clean confirming scan ends it.
     if len(vulns) == 0 or len(changed) == 0 or n >= STATIC_MAX_PASSES {
@@ -771,7 +789,8 @@ obj GatedFix {
     has files: dict[str, str],
         verdict: AuditReport,
         summary: str,
-        changed: list[str];
+        changed: list[str],
+        attempts: list[dict[str, any]] = [];
 }
 
 glob FLASK_FIX_TRIES: int = 2;
@@ -801,23 +820,26 @@ retry once with the rejection as feedback; if that fails too, discard the
 patch so the working copy never goes live broken."""
 def gated_fix(files: dict[str, str], blob: str, exploit_lines: str, confirmed: list[Vuln]) -> GatedFix {
     feedback = "";
+    tried: list[dict[str, any]] = [];
     for attempt in range(FLASK_FIX_TRIES) {
         live_draft(attempt + 1);
         patch = fix_all(blob, exploit_lines + feedback);
         fixed = apply_edits(files, patch.edits);
         rep = verify_fixes(fixed, confirmed);
+        changed = [p for p in files.keys() if fixed.get(p) != files[p]];
         if rep.health_ok and rep.fixed > 0 {
-            return GatedFix(files=fixed, verdict=rep, summary=patch.summary,
-                            changed=[p for p in files.keys() if fixed.get(p) != files[p]]);
+            tried = tried + [_attempt(attempt + 1, "accepted", f"exploit replay: {rep.fixed} of {len(confirmed)} closed; health checks pass", patch.summary, changed)];
+            return GatedFix(files=fixed, verdict=rep, summary=patch.summary, changed=changed, attempts=tried);
         }
         why = f"it broke legitimate requests that must keep working: {failed_checks(fixed)}" if not rep.health_ok else "the exploits still worked";
         print(f"[audit] referee rejected patch (try {attempt + 1}): {why}; Blue edited {[e.path for e in patch.edits]}");
+        tried = tried + [_attempt(attempt + 1, "rejected", why[:300], patch.summary, changed)];
         feedback = f"\nYour previous patch was REJECTED by the referee because {why}. Fix the holes while keeping legitimate requests working.";
         live_event(f"Referee rejected Blue's patch: {why}. Retrying.");
     }
     kept = verify_fixes(files, confirmed);
     kept.health_ok = True;
-    return GatedFix(files=files, verdict=kept, changed=[],
+    return GatedFix(files=files, verdict=kept, changed=[], attempts=tried,
                     summary="The referee rejected Blue's patches (they broke the app or didn't close the holes), so the code was left unchanged.");
 }
 
