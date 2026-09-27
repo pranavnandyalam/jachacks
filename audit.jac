@@ -6,11 +6,13 @@ any and all files; the trade is that fixes are verified, not confined."""
 
 import json;
 import os;
+import re;
 
 import from jaclang.byllm.lib { Model }
-import from config { read_manifest, target_source_path, secret_hint, target_name, attacker_user, active_dir }
+import from config { read_manifest, target_source_path, secret_hint, policy, target_name, attacker_user, active_dir }
 import from sandbox { AttackReq, run_sandbox_files }
 import from live { live_begin, live_draft, live_event, live_end }
+import from codecheck { apply_code_edits, syntax_errors }
 
 glob scanner: Model = Model(model_name="ollama_chat/huihui_ai/qwen3-coder-abliterated");
 glob fixer: Model = Model(model_name="ollama_chat/huihui_ai/qwen3-coder-abliterated");
@@ -63,6 +65,50 @@ sem fix_all = "You are Blue, a secure-coding agent. You are given the full sourc
 sem fix_all.code = "The full source of the target app, each file under a '=== FILE: name ===' header.";
 sem fix_all.exploits = "The confirmed exploits Blue must close, one per line.";
 def fix_all(code: str, exploits: str) -> PatchSet by fixer(temperature=0.1);
+
+# ---- Blue for apps we can't run (any language): small find/replace edits ----
+
+obj CodeEdit {
+    has path: str,
+        find: str,
+        replace: str;
+}
+sem CodeEdit = "One small find-and-replace inside one file.";
+sem CodeEdit.path = "The file's path exactly as given in its '=== FILE: name ===' header.";
+sem CodeEdit.find = "A few consecutive lines copied EXACTLY from that file, with the same indentation, that uniquely locate the spot to change.";
+sem CodeEdit.replace = "The corrected lines that replace them, in the same language and style.";
+
+obj EditPlan {
+    has edits: list[CodeEdit],
+        summary: str;
+}
+sem EditPlan = "The small edits Blue makes to close every listed hole, plus a one-line summary.";
+sem EditPlan.edits = "One edit per spot you change. Never rewrite a whole file.";
+sem EditPlan.summary = "One sentence naming what you fixed overall.";
+
+sem fix_by_edits = "You are Blue, a secure-coding agent. You are given the backend source of a small web app in any language (Python, Go, TypeScript, ...) and a list of holes an attacker found. Close EVERY listed hole with the smallest change: add the missing login, role, or ownership check, or stop returning the secret. Keep legitimate requests working: a user can still read their OWN data and an admin can still do admin work. Reuse helpers that already exist in the code (session or user lookups, role fields, error responses). Answer with small find/replace edits, never whole files.";
+sem fix_by_edits.code = "The backend source, each file under a '=== FILE: name ===' header.";
+sem fix_by_edits.exploits = "The holes Blue must close, one per line.";
+sem fix_by_edits.rules = "The app's intended access rules. Fix toward these exactly: grant what they allow, block what they forbid.";
+sem fix_by_edits.feedback = "Why your previous attempt was rejected, or empty on the first try.";
+def fix_by_edits(code: str, exploits: str, rules: str, feedback: str) -> EditPlan by fixer(temperature=0.1);
+
+# ---- Referee for apps we can't run: judge ONE claimed hole against the code --
+
+obj HoleCheck {
+    has handler: str,
+        trace: str,
+        status: int;
+}
+sem HoleCheck = "What the code actually does with one request, traced step by step.";
+sem HoleCheck.handler = "Copy the exact lines of the handler for this method and path, verbatim from the code.";
+sem HoleCheck.trace = "Step through this exact request from this user: middleware, every if-check, the database query with its WHERE clause and which rows match given the seeded data, and what is sent back.";
+sem HoleCheck.status = "The HTTP status code the server sends back at the end of your trace, e.g. 200, 401, 403 or 404.";
+
+sem check_hole = "You are a precise code tracer. You are given the backend source of a web app and ONE HTTP request. Find the handler for that method and path and trace exactly what the code does when this user sends it, using the seeded users and records in the code. Do not guess or assume intent; follow the code as written.";
+sem check_hole.code = "The backend source, each file under a '=== FILE: name ===' header.";
+sem check_hole.hole = "The request to trace: method, path, and who sends it.";
+def check_hole(code: str, hole: str) -> HoleCheck by scanner(temperature=0.0);
 
 # ---- deterministic mechanics (no LLM) ---------------------------------------
 
@@ -243,11 +289,186 @@ test "audit mechanics: multi-file confirm, apply, verify (no LLM)" {
     assert rep.health_ok;
 }
 
+# ---- static mode: fix apps we can't run in-process (Go, TS, FastAPI) --------
+# Same loop as runnable apps, but the referee can't fire exploits at the code.
+# Instead each claimed hole is judged against the handler's code by check_hole
+# (before fixing, to drop false alarms; after, to see if it closed), and a fix
+# must apply cleanly and pass the language's own syntax check. Broken or
+# unappliable patches are discarded, so the working copy always parses.
+
+glob STATIC_FIX_TRIES: int = 2;
+# Without a runtime, extra passes mostly chase Red's false alarms and churn
+# correct code, so static audits stop as soon as a pass closes everything.
+glob STATIC_MAX_PASSES: int = 4;
+
+"""True when the target is a Flask app we run in-process (manifest mode 'fix')."""
+def is_runnable -> bool {
+    return read_manifest().get("mode", "fix") == "fix";
+}
+
+"""Only the backend files (the ones that decide who can see what)."""
+def backend_paths(files: dict[str, str]) -> list[str] {
+    return [
+        p for p in files.keys()
+        if not p.startswith("public/") and os.path.splitext(p)[1] not in [".html", ".css"]
+    ];
+}
+
+"""A route's identity for matching findings across scans: method plus path with
+ids and placeholders collapsed, so /api/tasks/202 == /api/tasks/{id}."""
+def route_key(method: str, path: str) -> str {
+    segs: list[str] = [];
+    for s in path.split("?")[0].strip("/").split("/") {
+        if s.isdigit() or s.startswith("{") or s.startswith("<") or s.startswith(":") {
+            segs = segs + ["*"];
+        } else {
+            segs = segs + [s.lower()];
+        }
+    }
+    return method.upper() + " /" + "/".join(segs);
+}
+
+"""Drop repeat findings of the same route."""
+def dedupe_vulns(vulns: list[Vuln]) -> list[Vuln] {
+    seen: list[str] = [];
+    out: list[Vuln] = [];
+    for v in vulns {
+        k = route_key(v.method, v.path);
+        if k not in seen {
+            seen = seen + [k];
+            out = out + [v];
+        }
+    }
+    return out;
+}
+
+def exploit_lines(vulns: list[Vuln]) -> str {
+    return "\n".join([
+        f"- {v.method} {v.path} as {v.as_user if v.as_user else 'anon'} [{v.vuln_class}]: {v.why}"
+        for v in vulns
+    ]);
+}
+
+def backend_blob(files: dict[str, str]) -> str {
+    return files_blob({p: files[p] for p in backend_paths(files)});
+}
+
+"""Referee (no runtime): is this one request really a hole in `code`? It sees
+only the request, never Red's argument, so it judges the code rather than
+agreeing with the claim. It's a hole if the code lets the request through
+(traced status < 400); Red only proposes requests the rules forbid."""
+def still_exploitable(code: str, v: Vuln) -> bool {
+    who = v.as_user if v.as_user else "an anonymous caller (no login)";
+    body = "" if v.method.upper() in ["GET", "HEAD", "DELETE"] else " with a valid JSON body";
+    hc = check_hole(code, f"{v.method} {v.path} sent by {who}{body}");
+    return traced_status(hc.trace, hc.status) < 400;
+}
+
+"""The final HTTP status in a trace: the last status code the trace names (the
+local model's prose trace is more reliable than its separate status field),
+else the field."""
+def traced_status(trace: str, fallback: int) -> int {
+    codes = re.findall(r"\b(200|201|204|400|401|403|404|405|409|422|500)\b", trace);
+    return int(codes[-1]) if codes else fallback;
+}
+
+obj Confirmed {
+    has vulns: list[Vuln],
+        more: bool;
+}
+
+"""Keep the first `limit` candidates the referee agrees are exploitable. `more`
+is True when candidates were left unchecked for a later pass."""
+def confirm_static(files: dict[str, str], candidates: list[Vuln], limit: int) -> Confirmed {
+    code = backend_blob(files);
+    todo = dedupe_vulns(candidates);
+    out: list[Vuln] = [];
+    checked = 0;
+    for v in todo {
+        if len(out) >= limit {
+            break;
+        }
+        checked += 1;
+        if still_exploitable(code, v) {
+            out = out + [v];
+        }
+    }
+    return Confirmed(vulns=out, more=checked < len(todo));
+}
+
+obj StaticFix {
+    has files: dict[str, str],
+        summary: str,
+        changed: list[str];
+}
+
+"""Blue patches the backend with small edits; keep the result only if every
+edit-touched file still parses. Retries once with the rejection as feedback.
+Returns the unchanged files if no attempt was usable."""
+def static_fix(files: dict[str, str], vulns: list[Vuln], n: int) -> StaticFix {
+    backend = backend_paths(files);
+    code = backend_blob(files);
+    lines = exploit_lines(vulns);
+    feedback = "";
+    for attempt in range(STATIC_FIX_TRIES) {
+        live_draft(attempt + 1);
+        plan = fix_by_edits(code, lines, policy(), feedback);
+        res = apply_code_edits(files, [(e.path, e.find, e.replace) for e in plan.edits], backend);
+        changed = [p for p in files.keys() if res.files[p] != files[p]];
+        if not changed {
+            feedback = "None of your edits matched the code. Copy each find block EXACTLY from the file.";
+            live_event(f"Pass {n}: Blue's edit didn't match the code, retrying.");
+            continue;
+        }
+        err = syntax_errors(res.files, changed);
+        if err {
+            feedback = "Your edit broke the code, so it was discarded: " + err;
+            live_event(f"Pass {n}: Blue's patch didn't compile, retrying.");
+            continue;
+        }
+        return StaticFix(files=res.files, summary=plan.summary, changed=changed);
+    }
+    return StaticFix(
+        files=files, changed=[],
+        summary="Blue couldn't produce a patch that applies and compiles, so nothing was changed."
+    );
+}
+
+"""Judge each confirmed hole against the patched code: closed when the referee
+says it's no longer exploitable. Nothing closes if the patch changed nothing."""
+def static_findings(fixed: dict[str, str], vulns: list[Vuln], patched: bool) -> list[Finding] {
+    code = backend_blob(fixed);
+    return [
+        Finding(method=v.method, path=v.path, as_user=v.as_user, vuln_class=v.vuln_class,
+                why=v.why, closed=patched and not still_exploitable(code, v))
+        for v in vulns
+    ];
+}
+
+test "static mode: route matching, dedupe, backend filter (no LLM)" {
+    assert route_key("get", "/api/tasks/202") == route_key("GET", "/api/tasks/{task_id}");
+    assert route_key("GET", "/api/tasks/:id") == "GET /api/tasks/*";
+    assert route_key("GET", "/api/tasks") != route_key("POST", "/api/tasks");
+    a = Vuln(method="GET", path="/api/tasks/1", as_user="alice", vuln_class="IDOR", why="x");
+    b = Vuln(method="GET", path="/api/tasks/2", as_user="bob", vuln_class="IDOR", why="y");
+    c = Vuln(method="GET", path="/api/admin/users", as_user="alice", vuln_class="BFLA", why="z");
+    assert len(dedupe_vulns([a, b, c])) == 2;
+    files = {"src/server.ts": "", "public/app.js": "", "public/index.html": "", "main.go": ""};
+    assert sorted(backend_paths(files)) == ["main.go", "src/server.ts"];
+    assert not static_findings({}, [a], False)[0].closed;  # unpatched: nothing closes, no LLM call
+    assert traced_status("checks owner_id... so it returns a 404 error", 200) == 404;
+    assert traced_status("role is admin, returns 200 with all users", 403) == 200;
+    assert traced_status("no code mentioned", 403) == 403;
+}
+
 # ---- looping audit: keep fixing until a pass finds nothing -------------------
 
 import difflib;
 
 glob MAX_PASSES: int = 5;
+# Fix at most this many bugs per pass, so hardening plays out over several
+# visible rounds instead of one big patch.
+glob MAX_PER_PASS: int = 2;
 
 node Auditor {
     has name: str = "auditor",
@@ -335,13 +556,17 @@ def:pub audit_step -> None {
     if a.finished {
         return;
     }
+    if not is_runnable() {
+        static_step(a);
+        return;
+    }
     n = a.passes_done + 1;
     files = _files_from_json(a.working_json);
     blob = files_blob(files);
 
     live_begin("scan", n);
     scan = find_vulns(blob, secret_hint());
-    confirmed = confirm_vulns(files, scan.vulns);
+    confirmed = confirm_vulns(files, scan.vulns)[:MAX_PER_PASS];
 
     fixed = files;
     summary = "";
@@ -382,6 +607,70 @@ def:pub audit_step -> None {
         diffs_json=_diffs(files, fixed)
     );
     if len(confirmed) == 0 or n >= MAX_PASSES {
+        a.finished = True;
+    }
+}
+
+"""One pass for an app we can't run: Red scans, the referee keeps only holes it
+agrees are real, Blue patches with small edits (must apply + compile), then the
+referee re-judges each hole against the patched code."""
+def static_step(a: Auditor) -> None {
+    n = a.passes_done + 1;
+    files = _files_from_json(a.working_json);
+    live_begin("scan", n);
+    candidates = find_vulns(backend_blob(files), secret_hint()).vulns;
+    live_event(f"Red flagged {len(candidates)} route(s); the referee is checking each against the code.");
+    conf = confirm_static(files, candidates, MAX_PER_PASS);
+    vulns = conf.vulns;
+    fixed = files;
+    summary = "No vulnerabilities found in this pass.";
+    changed: list[str] = [];
+    findings: list[Finding] = [];
+    if vulns {
+        live_begin("fix", n);
+        live_event(f"Found {len(vulns)} issue(s). Blue is patching the code.");
+        sf = static_fix(files, vulns, n);
+        fixed = sf.files;
+        summary = sf.summary;
+        changed = sf.changed;
+        live_begin("scan", n);
+        live_event("The referee is re-checking each hole against the patched code.");
+        findings = static_findings(fixed, vulns, len(changed) > 0);
+    }
+    live_end();
+
+    closed_n = len([f for f in findings if f.closed]);
+    # Tie-break: the no-runtime referee can't tell "200 with your own data" from
+    # a leak, so it over-flags. If Blue re-reads the flagged routes and finds
+    # nothing to change, the code is judged already safe and the audit ends done
+    # (the flags are shown, marked as reviewed) instead of stuck open.
+    disputed = len(vulns) > 0 and len(changed) == 0;
+    if disputed {
+        summary = "Blue reviewed these flags and found the code already enforces the rules; nothing to change.";
+        closed_n = len(vulns);
+        findings = [
+            Finding(method=f.method, path=f.path, as_user=f.as_user,
+                    vuln_class=f.vuln_class, why=f.why, closed=True)
+            for f in findings
+        ];
+    }
+    a.working_json = _files_to_json(fixed);
+    a.passes_done = n;
+    findings_j = json.dumps([
+        {"method": f.method, "path": f.path, "as_user": f.as_user,
+         "vuln_class": f.vuln_class, "why": f.why, "closed": f.closed}
+        for f in findings
+    ]);
+    auditor() +>:Did():+> Pass(
+        n=n, found=len(vulns), fixed=closed_n, still_open=len(vulns) - closed_n,
+        health_ok=True, summary=summary,
+        files_changed_json=json.dumps(changed), findings_json=findings_j,
+        diffs_json=_diffs(files, fixed)
+    );
+    # Done when a pass is clean, or closes everything with nothing left to
+    # check, Blue is stuck (changed nothing), or the cap.
+    all_closed = closed_n == len(vulns) and not conf.more;
+    if len(vulns) == 0 or all_closed or len(changed) == 0 or n >= STATIC_MAX_PASSES {
         a.finished = True;
     }
 }

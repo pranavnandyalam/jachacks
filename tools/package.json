@@ -1,0 +1,8 @@
+{
+  "name": "red-queen-tools",
+  "private": true,
+  "description": "Syntax checker for TypeScript/JavaScript patches (codecheck.jac). Setup: npm install --prefix tools",
+  "dependencies": {
+    "typescript": "^5.9.3"
+  }
+}

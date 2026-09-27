@@ -5,8 +5,8 @@ shows what it's doing."""
 
 import from "react" { useEffect }
 import from ..audit {
-    AuditState, PassInfo, TargetFile, Finding, FileDiff, Vuln, VulnReport,
-    audit_step, reset_audit, get_audit_state, scan_target
+    AuditState, PassInfo, TargetFile, Finding, FileDiff,
+    audit_step, reset_audit, get_audit_state
 }
 import from ..config { TargetInfo, list_targets, set_active_target }
 import from ..live { LiveInfo, get_live }
@@ -21,8 +21,6 @@ def:pub AuditDashboard -> JsxElement {
         sites: list[TargetInfo] = [],
         live: LiveInfo | None = None,
         running: bool = False,
-        scanning: bool = False,
-        scanFindings: list[Vuln] = [],
         pickedFile: str = "",
         err: str = "";
 
@@ -36,14 +34,13 @@ def:pub AuditDashboard -> JsxElement {
 
     """Switch to another example site: point the engine at it, wipe the old run."""
     async def on_pick_site(e: ChangeEvent) {
-        if running or scanning {
+        if running {
             return;
         }
         chosen: str = e.target.value;
         try {
             await set_active_target(chosen);
             await reset_audit();
-            scanFindings = [];
             pickedFile = "";
             await load_sites();
             await refresh();
@@ -75,13 +72,7 @@ def:pub AuditDashboard -> JsxElement {
     }
 
     async def run {
-        if running or scanning {
-            return;
-        }
-        # Scan-only sites (other languages we can't run in-process): Red finds,
-        # but there's no verified fix loop.
-        if state and state.mode == "scan" {
-            await scan();
+        if running {
             return;
         }
         running = True;
@@ -98,18 +89,6 @@ def:pub AuditDashboard -> JsxElement {
             err = "Audit stopped: " + str(e);
         }
         running = False;
-    }
-
-    async def scan {
-        scanning = True;
-        scanFindings = [];
-        try {
-            rep = await scan_target();
-            scanFindings = rep.vulns;
-        } except Exception as e {
-            err = "Scan stopped: " + str(e);
-        }
-        scanning = False;
     }
 
     async def on_reset {
@@ -142,18 +121,17 @@ def:pub AuditDashboard -> JsxElement {
     phase: str = live.phase if live else "idle";
     livePass: int = live.round_n if live else 0;
     secs: int = live.elapsed_s if live and phase != "idle" else 0;
-    busy: bool = running or scanning;
-    scanMode: bool = bool(state and state.mode == "scan");
+    busy: bool = running;
+    # Apps in other languages (Go, TypeScript, FastAPI) can't run in-process, so
+    # their fixes are checked by compiling + Red re-scanning, not by live exploit.
+    staticMode: bool = bool(state and state.mode == "static");
     activeDir: str = "";
     for s in sites {
         if s.active {
             activeDir = s.dir;
         }
     }
-    primaryLabel: str = "Scan for vulnerabilities" if scanMode else "Harden this codebase";
-    if busy {
-        primaryLabel = "Scanning..." if scanMode else "Hardening...";
-    }
+    primaryLabel: str = "Hardening..." if busy else "Harden this codebase";
 
     <div className="app">
         <header className="top">
@@ -167,7 +145,7 @@ def:pub AuditDashboard -> JsxElement {
                     <select className="site-select" value={activeDir} disabled={busy} onChange={on_pick_site}>
                         {for s in sites {
                             <option key={s.dir} value={s.dir}>
-                                {s.name + " (" + (str(s.files) + " files" if s.files > 1 else "1 file") + (", scan only" if s.mode == "scan" else "") + ")"}
+                                {s.name + " (" + (str(s.files) + " files" if s.files > 1 else "1 file") + (", checked by re-scan" if s.mode == "static" else "") + ")"}
                             </option>
                         }}
                     </select>
@@ -182,19 +160,14 @@ def:pub AuditDashboard -> JsxElement {
             <p className="alert" role="alert">{err}</p>
         }}
 
-        {if scanMode {
-            <ScanView scanning={scanning} findings={scanFindings} target={state.target if state else ""}/>
-        } else {
-            <AuditStatus phase={phase} secs={secs} livePass={livePass} state={state} clean={clean}/>
-            if state {
-                <AuditSummary state={state}/>
-            }
+        <AuditStatus phase={phase} secs={secs} livePass={livePass} state={state} clean={clean} staticMode={staticMode}/>
+        {if state {
+            <AuditSummary state={state} staticMode={staticMode}/>
         }}
 
         <main className="layout">
-            {if not scanMode {
-                <section className="ledger" aria-label="Audit passes">
-                    <header className="panel-head">
+            <section className="ledger" aria-label="Audit passes">
+                <header className="panel-head">
                         <h2 className="panel-title">{"Passes"}</h2>
                         <span className="panel-note">{(state.target if state else "") + " · " + str(len(files)) + (" files" if len(files) != 1 else " file")}</span>
                     </header>
@@ -207,47 +180,8 @@ def:pub AuditDashboard -> JsxElement {
                         }}
                     </ol>
                 </section>
-            }}
             <FileViewer files={files} selected={selected} onPick={pick}/>
         </main>
-    </div>
-}
-
-"""Scan-only view for sites we can read but can't run in-process (other
-languages). Red still finds the holes; there is no verified fix."""
-def:pub ScanView(scanning: bool, findings: list[Vuln], target: str) -> JsxElement {
-    <div>
-        <div className={"status is-" + ("working" if scanning else ("done" if len(findings) > 0 else "idle"))} role="status" aria-live="polite">
-            <span className="status-dot" aria-hidden="true"></span>
-            <span className="status-msg">
-                {("Red is reading " + target + " and looking for vulnerabilities...") if scanning else (("Red found " + str(len(findings)) + (" vulnerability." if len(findings) == 1 else " vulnerabilities.") + " Findings are unverified -- this app runs in another language, so there's no in-engine fix yet.") if len(findings) > 0 else "Scan for vulnerabilities to read this app's code.")}
-            </span>
-        </div>
-        {if len(findings) > 0 {
-            <section className="ledger" aria-label="Findings">
-                <header className="panel-head">
-                    <h2 className="panel-title">{"Findings"}</h2>
-                    <span className="panel-note">{"unverified"}</span>
-                </header>
-                <ol className="rounds">
-                    {for (i, v) in enumerate(findings) {
-                        <li key={str(i)} className="round">
-                            <div className="round-hit" aria-hidden="true"><span className="round-n">{str(i + 1)}</span></div>
-                            <div className="round-body">
-                                <div className="step found">
-                                    <p className="step-head">
-                                        <span className="step-kind">{"Found"}</span>
-                                        <span className="step-title">{v.vuln_class}</span>
-                                    </p>
-                                    <p className="req"><code>{v.method + " " + v.path}</code><span className="req-who">{" as " + (v.as_user if v.as_user else "anonymous")}</span></p>
-                                    <p className="why">{v.why}</p>
-                                </div>
-                            </div>
-                        </li>
-                    }}
-                </ol>
-            </section>
-        }}
     </div>
 }
 
@@ -255,17 +189,20 @@ def _pass_no(p: PassInfo) -> int {
     return p.n;
 }
 
-def:pub AuditStatus(phase: str, secs: int, livePass: int, state: AuditState | None, clean: bool) -> JsxElement {
+def:pub AuditStatus(phase: str, secs: int, livePass: int, state: AuditState | None, clean: bool, staticMode: bool) -> JsxElement {
     msg: str = "Ready. Harden this codebase to start.";
     tone: str = "idle";
     if phase == "scan" {
         msg = "Pass " + str(livePass) + ": Red is reading the code and looking for ways to leak the secret.";
         tone = "working";
     } elif phase == "fix" {
-        msg = "Pass " + str(livePass) + ": Blue is rewriting the affected files.";
+        msg = "Pass " + str(livePass) + (": Blue is patching the code." if staticMode else ": Blue is rewriting the affected files.");
         tone = "working";
     } elif clean {
         msg = "Clean. The last scan found nothing left to fix after " + str(state.passes_done if state else 0) + (" pass." if (state and state.passes_done == 1) else " passes.");
+        if staticMode {
+            msg = msg + " (This app runs in another language: fixes are checked by compiling and re-scanning, not by live exploit.)";
+        }
         tone = "done";
     } elif state and state.passes_done > 0 {
         msg = "Paused after pass " + str(state.passes_done) + ".";
@@ -279,11 +216,11 @@ def:pub AuditStatus(phase: str, secs: int, livePass: int, state: AuditState | No
     </div>
 }
 
-def:pub AuditSummary(state: AuditState) -> JsxElement {
+def:pub AuditSummary(state: AuditState, staticMode: bool) -> JsxElement {
     <dl className="summary">
         <div><dt>{"Passes"}</dt><dd>{str(state.passes_done)}</dd></div>
         <div><dt>{"Found"}</dt><dd className={"n-found" if state.total_found > 0 else ""}>{str(state.total_found)}</dd></div>
         <div><dt>{"Still open"}</dt><dd className={"n-open" if state.total_open > 0 else "n-fixed"}>{str(state.total_open)}</dd></div>
-        <div><dt>{"App checks"}</dt><dd className={"n-fixed" if state.health_ok else "n-found"}>{"Passing" if state.health_ok else "Failing"}</dd></div>
+        <div><dt>{"Compiles" if staticMode else "App checks"}</dt><dd className={"n-fixed" if state.health_ok else "n-found"}>{("Yes" if staticMode else "Passing") if state.health_ok else "Failing"}</dd></div>
     </dl>
 }

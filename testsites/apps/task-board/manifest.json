@@ -2,7 +2,7 @@
   "name": "Task Board",
   "entry": "src/server.ts",
   "app_var": "app",
-  "mode": "scan",
+  "mode": "static",
   "files": [
     "src/server.ts",
     "public/index.html",
@@ -16,5 +16,6 @@
   ],
   "attacker": "alice",
   "secret_hint": "Another user's private tasks and admin-only user management must be out of reach for a normal member.",
-  "health_checks": []
+  "health_checks": [],
+  "policy": "Every /api route except /api/login requires a signed-in user. A user may read and change only the tasks they own (tasks.owner_id is their id). Only users with role 'admin' may list or update users under /api/admin/."
 }

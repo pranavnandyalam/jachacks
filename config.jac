@@ -109,5 +109,13 @@ def secret_hint -> str {
     m = read_manifest();
     who = m.get("attacker", "a low-privilege user");
     hint = m.get("secret_hint", "A secret value exists that only privileged users should be able to read.");
-    return "You are logged in only as '" + who + "'. " + hint;
+    return "You are logged in only as '" + who + "'. " + hint + (" The app's intended access rules: " + policy() if policy() else "");
+}
+
+"""The app's intended access rules, in plain words (manifest `policy`), or "".
+It says who SHOULD be allowed to do what -- never where the bugs are -- so the
+agents know what correct looks like: Red spots violations, Blue fixes toward
+the rule instead of guessing (e.g. owner-filter, not admin-only)."""
+def policy -> str {
+    return read_manifest().get("policy", "");
 }

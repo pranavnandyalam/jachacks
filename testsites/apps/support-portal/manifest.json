@@ -2,7 +2,7 @@
   "name": "Support Portal",
   "entry": "app.py",
   "app_var": "app",
-  "mode": "scan",
+  "mode": "static",
   "files": [
     "app.py",
     "public/index.html",
@@ -16,5 +16,6 @@
   ],
   "attacker": "alice",
   "secret_hint": "An internal service token and other users' private tickets should never reach a low-privilege or anonymous caller.",
-  "health_checks": []
+  "health_checks": [],
+  "policy": "Reading or exporting tickets requires a signed-in user, and a user only ever sees their OWN tickets (tickets.owner_id is their id); /api/tickets/export returns the caller's own tickets. The internal service token is for backend services only and must never be sent to any user."
 }

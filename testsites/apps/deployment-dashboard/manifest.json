@@ -2,7 +2,7 @@
   "name": "Deployment Dashboard",
   "entry": "main.go",
   "app_var": "app",
-  "mode": "scan",
+  "mode": "static",
   "files": [
     "main.go",
     "public/index.html",
@@ -16,5 +16,6 @@
   ],
   "attacker": "alice",
   "secret_hint": "Debug configuration and admin credentials must never be reachable by a low-privilege or anonymous caller.",
-  "health_checks": []
+  "health_checks": [],
+  "policy": "Viewing releases and deployments requires a signed-in user; creating deployments is admin-only. Debug or configuration endpoints must not be reachable by non-admins, and no password or credential may ever appear in a response. The admin password must come from the DEPLOY_ADMIN_PASSWORD environment variable, never a hardcoded value."
 }
