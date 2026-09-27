@@ -1,0 +1,21 @@
+{
+  "name": "Support Portal",
+  "entry": "app.py",
+  "app_var": "app",
+  "mode": "static",
+  "files": [
+    "app.py",
+    "public/index.html",
+    "public/app.js",
+    "public/style.css"
+  ],
+  "users": [
+    "alice",
+    "bob",
+    "admin"
+  ],
+  "attacker": "alice",
+  "secret_hint": "An internal service token and other users' private tickets should never reach a low-privilege or anonymous caller.",
+  "health_checks": [],
+  "policy": "Reading, exporting or changing tickets requires a signed-in user, and a user only ever sees or changes their OWN tickets (tickets.owner_id is their id); /api/tickets/export returns the caller's own tickets. A user's account record is visible only to that user or an admin, and password hashes are never returned. The internal service token is for backend services only and must never be sent to any user."
+}

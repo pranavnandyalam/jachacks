@@ -125,4 +125,20 @@ def get_ticket(ticket_id: int, user=Depends(auth)):
         raise HTTPException(404, 'Ticket not found')
     return dict(row)
 
+@app.patch('/api/tickets/{ticket_id}')
+def rename_ticket(ticket_id: int, body: Ticket, user=Depends(auth)):
+    with connect() as db:
+        cursor = db.execute('UPDATE tickets SET title=? WHERE id=?', (body.title.strip(), ticket_id))
+    if not cursor.rowcount:
+        raise HTTPException(404, 'Ticket not found')
+    return {'ok':True}
+
+@app.get('/api/users/{user_id}')
+def get_user(user_id: int, user=Depends(auth)):
+    with connect() as db:
+        row = db.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, 'User not found')
+    return dict(row)
+
 app.mount('/', StaticFiles(directory=Path(__file__).parent / 'public', html=True), name='public')

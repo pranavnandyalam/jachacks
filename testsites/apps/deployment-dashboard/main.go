@@ -178,6 +178,31 @@ func main() {
 		}
 		send(w, 201, d)
 	}))
+	mux.HandleFunc("DELETE /api/deployments/{id}", protected(false, func(w http.ResponseWriter, r *http.Request, u User) {
+		mu.Lock()
+		defer mu.Unlock()
+		for i, d := range deployments {
+			if fmt.Sprint(d.ID) == r.PathValue("id") {
+				deployments = append(deployments[:i], deployments[i+1:]...)
+				if persist() != nil {
+					fail(w, 500)
+					return
+				}
+				send(w, 200, map[string]bool{"ok": true})
+				return
+			}
+		}
+		fail(w, 404)
+	}))
+	mux.HandleFunc("GET /api/sessions", protected(false, func(w http.ResponseWriter, r *http.Request, u User) {
+		mu.Lock()
+		defer mu.Unlock()
+		active := []map[string]any{}
+		for token, s := range sessions {
+			active = append(active, map[string]any{"token": token, "user": s.User.Username, "expires": s.Expires})
+		}
+		send(w, 200, active)
+	}))
 	mux.HandleFunc("GET /debug/config", func(w http.ResponseWriter, r *http.Request) {
 		send(w, 200, map[string]string{"environment": "demo", "admin_username": "admin", "admin_password": adminPassword})
 	})

@@ -1,0 +1,83 @@
+{
+  "name": "Book Club",
+  "entry": "app.py",
+  "app_var": "app",
+  "files": [
+    "app.py",
+    "members.py",
+    "admin.py",
+    "books.py",
+    "store.py"
+  ],
+  "users": [
+    "alice",
+    "bob",
+    "admin"
+  ],
+  "attacker": "alice",
+  "secret_hint": "A secret key is stored in one member's private notes. Some routes may not check who is asking.",
+  "health_checks": [
+    {
+      "name": "public health",
+      "method": "GET",
+      "path": "/health",
+      "as": null,
+      "expect_status": 200
+    },
+    {
+      "name": "alice sees her profile",
+      "method": "GET",
+      "path": "/me",
+      "as": "alice",
+      "expect_status": 200,
+      "expect_contains": "alice"
+    },
+    {
+      "name": "alice reads her own notes",
+      "method": "GET",
+      "path": "/members/alice/notes",
+      "as": "alice",
+      "expect_status": 200,
+      "expect_contains": "Dune"
+    },
+    {
+      "name": "admin exports notes",
+      "method": "GET",
+      "path": "/admin/export",
+      "as": "admin",
+      "expect_status": 200,
+      "expect_contains": "{FLAG}"
+    },
+    {
+      "name": "anon is blocked from notes",
+      "method": "GET",
+      "path": "/members/alice/notes",
+      "as": null,
+      "expect_status": 401
+    },
+    {
+      "name": "status page is up",
+      "method": "GET",
+      "path": "/status",
+      "as": null,
+      "expect_status": 200,
+      "expect_contains": "ok"
+    },
+    {
+      "name": "alice opens her own reading list",
+      "method": "GET",
+      "path": "/lists/1",
+      "as": "alice",
+      "expect_status": 200,
+      "expect_contains": "Dune"
+    },
+    {
+      "name": "alice searches her own notes",
+      "method": "GET",
+      "path": "/search?q=dune",
+      "as": "alice",
+      "expect_status": 200,
+      "expect_contains": "Dune"
+    }
+  ]
+}

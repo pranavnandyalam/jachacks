@@ -69,6 +69,12 @@ app.get('/api/tasks/:id', (req, res) => {
   if (!task) { res.status(404).json({error:'Task not found'}); return; }
   res.json(task);
 });
+app.delete('/api/tasks/:id', (req, res) => {
+  const result = db.prepare('DELETE FROM tasks WHERE id=?').run(String(req.params.id));
+  if (!result.changes) { res.status(404).json({error:'Task not found'}); return; }
+  res.json({ok:true});
+});
+app.get('/api/users/:id/tasks', (req, res) => res.json(db.prepare('SELECT * FROM tasks WHERE owner_id=? ORDER BY id').all(String(req.params.id))));
 app.get('/api/admin/users', (_req, res) => {
   if (res.locals.user.role !== 'admin') { res.status(403).json({error:'Administrator required'}); return; }
   res.json(db.prepare('SELECT id,username,role,display_name FROM users ORDER BY id').all());

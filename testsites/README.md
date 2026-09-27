@@ -22,9 +22,9 @@ Administrator username is `admin`. Default passwords are `task-admin-demo-pass` 
 
 ## Websites
 
-- **Task board:** sign in, create and view tasks, and manage users as an administrator. Deliberate flaws: cross-user task access (IDOR/BOLA) and missing role checks on user updates (BFLA).
-- **Support portal:** submit tickets, export tickets, and view account details. Deliberate flaws: unauthenticated ticket export and an internal service token in the account response.
-- **Deployment dashboard:** view releases and simulate deployments as an administrator. Deliberate flaws: exposed debug configuration and a hardcoded administrator credential. Deployments only create local records.
+- **Task board:** sign in, create and view tasks, and manage users as an administrator. Deliberate flaws: cross-user task access (IDOR/BOLA), cross-user task deletion, listing any user's tasks, and missing role checks on user updates (BFLA).
+- **Support portal:** submit tickets, export tickets, and view account details. Deliberate flaws: unauthenticated ticket export, an internal service token in the account response, renaming other users' tickets, and a user lookup that returns anyone's password hash.
+- **Deployment dashboard:** view releases and simulate deployments as an administrator. Deliberate flaws: exposed debug configuration, a hardcoded administrator credential, non-admins deleting deployments, and an endpoint listing every active session token. Deployments only create local records.
 
 Source lives under `apps/task-board`, `apps/support-portal`, and `apps/deployment-dashboard`. Sessions are held in memory; sign in again after restarting. Business data persists in Docker volumes.
 

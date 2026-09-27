@@ -167,3 +167,43 @@ h1, h2, p { margin: 0; }
   .code { position: static; }
   .code-scroll { max-height: 70vh; }
 }
+
+/* Audit mode */
+.findings { list-style: none; margin: 6px 0 0; padding: 0; }
+.finding { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 0; font-size: 14px; }
+.finding code { font-size: 13px; color: var(--ink); background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+.finding-cls { color: var(--muted); font-size: 12px; }
+.finding-state { margin-left: auto; font-size: 12px; font-weight: 600; }
+.finding-state.ok { color: var(--fixed); }
+.finding-state.bad { color: var(--found); }
+.changed-files { margin-top: 6px; font-size: 14px; color: var(--ink-2); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.filechip { font: inherit; font-size: 12.5px; font-family: var(--mono); color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line-strong); border-radius: 4px; padding: 1px 7px; cursor: pointer; }
+.filechip:hover { border-color: var(--ink-2); }
+.pass-diffs { margin-top: 8px; }
+.pass-diff + .pass-diff { margin-top: 10px; }
+.diff-file { margin: 0 0 4px; font-family: var(--mono); font-size: 12.5px; color: var(--ink-2); }
+
+.file-tabs { gap: 4px; flex-wrap: wrap; padding: 8px 10px; }
+.filetab { font: inherit; font-family: var(--mono); font-size: 12.5px; color: var(--ink-2);
+  background: none; border: 1px solid transparent; border-radius: 5px; padding: 4px 9px; cursor: pointer; }
+.filetab:hover { background: var(--bg); }
+.filetab.is-active { background: var(--bg); color: var(--ink); border-color: var(--line-strong); }
+
+/* Site picker */
+.site-pick { display: inline-flex; flex-direction: column; gap: 2px; margin-right: 4px; }
+.site-pick-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.site-select { font: inherit; font-size: 14px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 6px 10px; cursor: pointer; }
+.site-select:hover:not(:disabled) { border-color: var(--ink-2); }
+.site-select:disabled { color: var(--muted); }
+
+/* Ask Red Queen voice button */
+.voice { display: inline-flex; align-items: center; gap: 8px; }
+.voice-btn { display: inline-flex; align-items: center; gap: 8px; }
+.voice-btn.is-live { border-color: var(--found); color: var(--found); background: var(--found-bg); }
+.voice-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--found); }
+.voice-dot.is-speaking { animation: voice-pulse 0.9s ease-in-out infinite; }
+.voice-err { font-size: 13px; color: var(--found); max-width: 32ch; }
+@keyframes voice-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.6); opacity: 0.5; } }
+@media (prefers-reduced-motion: reduce) { .voice-dot.is-speaking { animation: none; } }
