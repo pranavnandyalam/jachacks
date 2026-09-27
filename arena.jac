@@ -27,6 +27,11 @@ glob MAX_MISSES: int = 5;
 glob SETTLED_MISSES: int = 3;
 glob MAX_PATCH_ATTEMPTS: int = 6;
 
+# Process-wide lock: set while Blue is patching (15-80s). Stops a second tab from
+# running Blue on the same breach, and a reset from wiping the game under a patch
+# that would then land in the NEW match. A dict so it can be mutated in place.
+glob BUSY: dict[str, bool] = {"blue": False};
+
 node Arena {
     has name: str = "red-queen",
         rounds_played: int = 0,
@@ -95,6 +100,7 @@ obj GameState {
         open_holes: int,
         current_version: int,
         health_ok: bool,
+        blue_pending: bool,
         rounds: list[RoundInfo];
 }
 
@@ -130,8 +136,12 @@ def:pub get_rejected_patches -> list[RejectedInfo] {
 }
 
 """Reset everything for a fresh match: rounds, codebase (reseeded at v0), Red's
-memory, and the referee's exploit suite."""
+memory, and the referee's exploit suite. Returns -1 (and does nothing) while Blue
+is mid-patch."""
 def:pub reset_game -> int {
+    if BUSY["blue"] {
+        return -1;
+    }
     ar = arena();
     rs = arena_rounds();
     n = len(rs);
@@ -199,7 +209,7 @@ def _judge(src: str, patch: Patch, func: str, target_req: AttackReq) -> Judged {
 }
 
 """Log a patch the referee rejected, so its failure mode is inspectable later."""
-def record_rejected(round_n: int, path: str, attempt: int, reason: str, patch: Patch) -> None {
+def record_rejected(round_n: int, path: str, attempt: int, reason: str, patch: Patch) {
     arena() +>:Rejected():+> RejectedPatch(
         round_n=round_n, path=path, attempt=attempt, reason=reason,
         summary=patch.summary, source=patch.new_source
@@ -274,16 +284,43 @@ def _open_holes -> int {
     return n if n > 0 else 0;
 }
 
-"""Run exactly one round. Safe to call after the game is finished (no-op)."""
-def:pub step_round -> RoundInfo {
+"""The round whose Red breach is still waiting for Blue (at most one), else None."""
+def _pending_round -> GameRound | None {
+    for r in arena_rounds() {
+        if r.red_breached and r.blue_attempts == 0 {
+            return r;
+        }
+    }
+    return None;
+}
+
+"""End the game when Red is clearly out of ideas: it has whiffed MAX_MISSES times,
+or every hole it HAS found is patched and it has whiffed a few times since."""
+def _update_finished(turn: int) {
     ar = arena();
+    settled = _open_holes() == 0 and _accepted_count() >= 1;
+    if turn >= MAX_ROUNDS
+        or ar.consecutive_misses >= MAX_MISSES
+        or (settled and ar.consecutive_misses >= SETTLED_MISSES) {
+        ar.finished = True;
+    }
+}
+
+"""Phase 1 of a round: Red reads the current source and fires one attack (fast).
+A breach is recorded into the referee's suite and left PENDING for `blue_turn`.
+Split from Blue so the dashboard can show Red's hit the moment it lands. If a
+breach is already pending, returns it unchanged (Blue must answer first)."""
+def:pub red_turn -> RoundInfo {
+    ar = arena();
+    pending = _pending_round();
+    if pending {
+        return _round_info(pending);
+    }
     if ar.finished {
         return _empty_round(ar.rounds_played);
     }
     turn = ar.rounds_played + 1;
-    src = current_source();
-    red = run_red_turn(src, turn);
-
+    red = run_red_turn(current_source(), turn);
     gr = GameRound(
         n=turn, red_method=red.method, red_path=red.path, red_identity=red.identity,
         red_vuln=red.vuln_class, red_hypothesis=red.hypothesis, red_breached=red.breached,
@@ -291,39 +328,63 @@ def:pub step_round -> RoundInfo {
         blue_attempts=0, exploit_blocked=False, regressions_ok=True, health_ok=True,
         version=codebase().head, diff=""
     );
-
+    arena() +>:Round():+> gr;
+    ar.rounds_played = turn;
     if red.breached {
         ar.consecutive_misses = 0;
         record_exploit(
             AttackReq(method=red.method, path=red.path, as_user=_user_of(red.identity)),
             red.vuln_class, turn
         );
-        defended = _blue_defend(red, turn);
-        gr.blue_summary = defended.blue_summary;
-        gr.blue_accepted = defended.blue_accepted;
-        gr.blue_retried = defended.blue_retried;
-        gr.blue_attempts = defended.blue_attempts;
-        gr.exploit_blocked = defended.exploit_blocked;
-        gr.regressions_ok = defended.regressions_ok;
-        gr.health_ok = defended.health_ok;
-        gr.version = defended.version;
-        gr.diff = defended.diff;
     } else {
         ar.consecutive_misses += 1;
-    }
-
-    arena() +>:Round():+> gr;
-    ar.rounds_played = turn;
-    # End when Red is clearly out of ideas: either it has whiffed MAX_MISSES times,
-    # or every hole it HAS found is patched (open==0, at least one patched) and it
-    # has whiffed a couple times since -- no point watching it flail on closed holes.
-    settled = _open_holes() == 0 and _accepted_count() >= 1;
-    if turn >= MAX_ROUNDS
-        or ar.consecutive_misses >= MAX_MISSES
-        or (settled and ar.consecutive_misses >= SETTLED_MISSES) {
-        ar.finished = True;
+        _update_finished(turn);
     }
     return _round_info(gr);
+}
+
+"""Phase 2 of a round: Blue patches the pending breach, gated by the referee
+(slow: one LLM rewrite per attempt). No-op if nothing is pending."""
+def:pub blue_turn -> RoundInfo {
+    gr = _pending_round();
+    if not gr {
+        return _empty_round(arena().rounds_played);
+    }
+    if BUSY["blue"] {
+        return _round_info(gr);
+    }
+    red = AttackResult(
+        method=gr.red_method, path=gr.red_path, identity=gr.red_identity,
+        vuln_class=gr.red_vuln, hypothesis=gr.red_hypothesis, breached=True,
+        status=gr.red_status, note=""
+    );
+    BUSY["blue"] = True;
+    try {
+        defended = _blue_defend(red, gr.n);
+    } finally {
+        BUSY["blue"] = False;
+    }
+    gr.blue_summary = defended.blue_summary;
+    gr.blue_accepted = defended.blue_accepted;
+    gr.blue_retried = defended.blue_retried;
+    gr.blue_attempts = defended.blue_attempts;
+    gr.exploit_blocked = defended.exploit_blocked;
+    gr.regressions_ok = defended.regressions_ok;
+    gr.health_ok = defended.health_ok;
+    gr.version = defended.version;
+    gr.diff = defended.diff;
+    _update_finished(gr.n);
+    return _round_info(gr);
+}
+
+"""Run exactly one full round (Red, then Blue if Red breached). Safe to call after
+the game is finished (no-op)."""
+def:pub step_round -> RoundInfo {
+    r = red_turn();
+    if r.red_breached and r.blue_attempts == 0 {
+        return blue_turn();
+    }
+    return r;
 }
 
 def _round_info(gr: GameRound) -> RoundInfo {
@@ -382,7 +443,7 @@ def:pub get_game_state -> GameState {
     return GameState(
         rounds_played=ar.rounds_played, finished=ar.finished, breaches=breaches,
         patches_accepted=accepted, open_holes=open_holes, current_version=codebase().head,
-        health_ok=health_ok, rounds=infos
+        health_ok=health_ok, blue_pending=_pending_round() is not None, rounds=infos
     );
 }
 
@@ -431,5 +492,48 @@ test "confine explains a blocked draft and keeps a good one" {
     c = _confine(src, good, "get_invoice");
     assert c.note == "";
     assert "403" in c.source;
+}
+
+
+def _fake_round(n: int, breached: bool, attempts: int) -> GameRound {
+    return GameRound(
+        n=n, red_method="GET", red_path="/debug", red_identity="alice", red_vuln="DEBUG_LEAK",
+        red_hypothesis="h", red_breached=breached, red_status=200, blue_summary="",
+        blue_accepted=False, blue_retried=False, blue_attempts=attempts,
+        exploit_blocked=False, regressions_ok=True, health_ok=True, version=0, diff=""
+    );
+}
+
+test "a breach with no Blue attempt yet is pending and blocks the next red_turn" {
+    reset_game();
+    assert _pending_round() is None;
+    assert not get_game_state().blue_pending;
+    arena() +>:Round():+> _fake_round(1, True, 0);
+    arena().rounds_played = 1;
+    assert _pending_round() is not None;
+    assert get_game_state().blue_pending;
+    # red_turn must not start a new round while Blue owes a patch
+    r = red_turn();
+    assert r.n == 1;
+    assert len(arena_rounds()) == 1;
+    reset_game();
+}
+
+test "answered breaches and misses are not pending; blue_turn is a no-op then" {
+    reset_game();
+    arena() +>:Round():+> _fake_round(1, True, 2);
+    arena() +>:Round():+> _fake_round(2, False, 0);
+    assert _pending_round() is None;
+    r = blue_turn();
+    assert r.red_method == "";
+    reset_game();
+}
+
+test "reset is refused while Blue is mid-patch" {
+    reset_game();
+    BUSY["blue"] = True;
+    assert reset_game() == -1;
+    BUSY["blue"] = False;
+    assert reset_game() >= 0;
 }
 
