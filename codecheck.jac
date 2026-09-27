@@ -179,3 +179,72 @@ test "syntax_error catches broken Python, Go and TypeScript" {
     assert syntax_error("s.ts", "const x = {;\n") != "";
     assert syntax_error("style.css", "anything") == "";
 }
+
+# ---- locate a route's handler in any language (no LLM) ----------------------
+
+import re;
+
+glob ROUTE_LITERAL: str = "[\"'`]([A-Z]+ )?(/[^\"'`\\s]*)[\"'`]";
+glob ROUTE_DEF_HINTS: list[str] = ["app.get(", "app.post(", "app.put(", "app.patch(", "app.delete(", "@app.", "mux.HandleFunc(", "router.", "@bp.", ".route("];
+glob HANDLER_MAX_LINES: int = 40;
+
+def _is_slot(seg: str) -> bool {
+    return seg.startswith(":") or (seg.startswith("{") and seg.endswith("}")) or (seg.startswith("<") and seg.endswith(">"));
+}
+
+"""Does a route template (/api/tasks/:id, /lists/<int:x>, /t/{id}) match a
+concrete path (/api/tasks/202)? Template slots match any segment."""
+def route_matches(template: str, path: str) -> bool {
+    t = template.strip("/").split("/");
+    c = path.split("?")[0].strip("/").split("/");
+    if len(t) != len(c) {
+        return False;
+    }
+    for (a, b) in zip(t, c) {
+        if a != b and not _is_slot(a) {
+            return False;
+        }
+    }
+    return True;
+}
+
+def _defines_route(line: str) -> bool {
+    return any(h in line for h in ROUTE_DEF_HINTS);
+}
+
+"""The verbatim source of the handler for METHOD PATH: the route-definition
+line whose literal matches and that names the method, through the line before
+the next route definition (capped). "" if not found."""
+def find_handler(files: dict[str, str], method: str, path: str) -> str {
+    m = method.lower();
+    for (name, body) in files.items() {
+        lines = body.split("\n");
+        for (i, line) in enumerate(lines) {
+            if not _defines_route(line) or m not in line.lower() {
+                continue;
+            }
+            for found in re.findall(ROUTE_LITERAL, line) {
+                if route_matches(found[1], path) {
+                    end = i + 1;
+                    while end < len(lines) and end < i + HANDLER_MAX_LINES and not _defines_route(lines[end]) {
+                        end += 1;
+                    }
+                    return f"{name}:\n" + "\n".join(lines[i:end]);
+                }
+            }
+        }
+    }
+    return "";
+}
+
+test "find_handler picks the exact route in TS, Go and Python" {
+    ts = "app.get('/api/admin/users', (_q, r) => {\n  if (u.role !== 'admin') return;\n});\napp.patch('/api/admin/users/:id', (req, res) => {\n  const name = 1;\n});\n";
+    h = find_handler({"s.ts": ts}, "PATCH", "/api/admin/users/3");
+    assert "app.patch" in h and "role" not in h;
+    go = "\tmux.HandleFunc(\"GET /api/x\", f)\n\tmux.HandleFunc(\"DELETE /api/x/{id}\", protected(false, g))\n\t\tdel()\n";
+    assert "DELETE /api/x/{id}" in find_handler({"main.go": go}, "DELETE", "/api/x/7");
+    py = "@app.get('/api/users/{user_id}')\ndef get_user(user_id: int):\n    return 1\n";
+    assert "def get_user" in find_handler({"app.py": py}, "GET", "/api/users/2");
+    assert find_handler({"app.py": py}, "GET", "/nope") == "";
+    assert route_matches("/lists/<int:list_id>", "/lists/3");
+}

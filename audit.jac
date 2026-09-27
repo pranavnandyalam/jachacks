@@ -12,7 +12,7 @@ import from jaclang.byllm.lib { Model }
 import from config { read_manifest, target_source_path, secret_hint, policy, target_name, attacker_user, active_dir }
 import from sandbox { AttackReq, run_sandbox_files }
 import from live { live_begin, live_draft, live_event, live_end }
-import from codecheck { apply_code_edits, syntax_errors }
+import from codecheck { apply_code_edits, syntax_errors, find_handler, resolve_path }
 import from llm { LLM_MODEL }
 
 glob scanner: Model = Model(model_name=LLM_MODEL);
@@ -48,13 +48,18 @@ def find_vulns(code: str, hint: str) -> VulnReport by scanner(temperature=0.3);
 
 glob RED_SCANS: int = 2;
 
-"""Red reads the code RED_SCANS times and the candidate lists are merged (the
-referee dedupes and confirms). One read misses holes at random; two reads
-catch most of what either would, for a couple of seconds more."""
+"""Red reads the code RED_SCANS times; each later read is told what's already
+been found and must look at the OTHER routes, so Red doesn't stop after its
+first few ideas. The referee dedupes and confirms the merged list."""
 def red_scan(code: str) -> list[Vuln] {
     out: list[Vuln] = [];
     for _ in range(RED_SCANS) {
-        out = out + find_vulns(code, secret_hint()).vulns;
+        hint = secret_hint();
+        if out {
+            seen = "; ".join(sorted(set([f"{v.method} {v.path}" for v in out])));
+            hint = hint + f" Already found (do NOT repeat these): {seen}. Now check every OTHER route, including write routes, admin routes, and any status, config or debug output.";
+        }
+        out = out + find_vulns(code, hint).vulns;
     }
     return out;
 }
@@ -121,10 +126,31 @@ sem HoleCheck.handler = "Copy the exact lines of the handler for this method and
 sem HoleCheck.trace = "Step through this exact request from this user: middleware, every if-check, the database query with its WHERE clause and which rows match given the seeded data, and what is sent back.";
 sem HoleCheck.status = "The HTTP status code the server sends back at the end of your trace, e.g. 200, 401, 403 or 404.";
 
-sem check_hole = "You are a precise code tracer. You are given the backend source of a web app and ONE HTTP request. Find the handler for that method and path and trace exactly what the code does when this user sends it, using the seeded users and records in the code. Do not guess or assume intent; follow the code as written.";
+sem check_hole = "You are a precise code tracer. You are given the backend source of a web app and ONE HTTP request. Find the handler for that method and path and trace exactly what the code does when this user sends it, using the seeded users and records in the code. Assume every seeded user, including the admin, is currently logged in with their own session. Do not guess or assume intent; follow the code as written.";
 sem check_hole.code = "The backend source, each file under a '=== FILE: name ===' header.";
 sem check_hole.hole = "The request to trace: method, path, and who sends it.";
 def check_hole(code: str, hole: str) -> HoleCheck by scanner(temperature=0.0);
+
+enum Outcome {
+    OTHER_USER,
+    ADMIN_ONLY,
+    SECRET,
+    SENDER,
+    PUBLIC,
+    NOTHING
+}
+sem Outcome.OTHER_USER = "The sender read, updated or deleted a record that belongs to a different user (e.g. another user's task, ticket, profile or display name), even if the response is just {ok: true}.";
+sem Outcome.ADMIN_ONLY = "A non-admin sender used an admin-only route (e.g. under /admin) or made a change only an admin should make, and it succeeded.";
+sem Outcome.SECRET = "The response contains ANOTHER user's or the system's token, password, password hash, API key or internal credential.";
+sem Outcome.SENDER = "The sender only got or changed their own data, including their own new session token from logging in with their own password, or logging out.";
+sem Outcome.PUBLIC = "Public data anyone may see, like a health check.";
+sem Outcome.NOTHING = "The request failed or returned nothing.";
+
+sem judge_outcome = "Read this trace of what a web server did with one request and classify what the sender ended up reading or changing. Judge by the records touched and whose they are, not by how short the response is.";
+sem judge_outcome.request = "The request: method, path and sender.";
+sem judge_outcome.trace = "Step-by-step trace of the request, ending in the response.";
+sem judge_outcome.sender = "Who sent the request, and their role.";
+def judge_outcome(request: str, trace: str, sender: str) -> Outcome by scanner(temperature=0.0);
 
 # ---- deterministic mechanics (no LLM) ---------------------------------------
 
@@ -167,7 +193,10 @@ def apply_edits(files: dict[str, str], edits: list[FileEdit]) -> dict[str, str] 
         out[name] = body;
     }
     for e in edits {
-        out[e.path] = e.new_content;
+        # Match Blue's path to a real file (./x.py, dir/x.py -> x.py) so an
+        # edit never lands in a phantom new file the app doesn't import.
+        key = resolve_path(files, e.path, backend_paths(files));
+        out[key if key else e.path] = e.new_content;
     }
     return out;
 }
@@ -411,14 +440,21 @@ def backend_blob(files: dict[str, str]) -> str {
 
 """Referee (no runtime): is this one request really a hole in `code`? It sees
 only the request, never Red's argument, so it judges the code rather than
-agreeing with the claim. It's a hole if the code lets the request through
-(traced status < 400); Red only proposes requests the rules forbid."""
-def still_exploitable(code: str, v: Vuln) -> bool {
+agreeing with the claim. It's a hole only if the code lets the request through
+(traced status < 400) AND the traced result is something this sender must not
+get or do (another user's data, a secret, an admin-only change)."""
+def still_exploitable(files: dict[str, str], v: Vuln) -> bool {
+    code = backend_blob(files);
+    handler = find_handler(files, v.method, v.path);
+    anchor = f" Its handler is exactly this code (trace THIS, not a similar route):\n{handler}" if handler else "";
     who = v.as_user if v.as_user else "an anonymous caller (no login)";
     body = "" if v.method.upper() in ["GET", "HEAD", "DELETE"] else " with a valid JSON body";
     ids = " (each id or placeholder in the path refers to an existing record owned by a DIFFERENT user)" if any(c in v.path for c in [":", "{", "<"]) or any(s.isdigit() for s in v.path.split("/")) else "";
-    hc = check_hole(code, f"{v.method} {v.path} sent by {who}{body}{ids}");
-    return traced_status(hc.trace, hc.status) < 400;
+    hc = check_hole(code, f"{v.method} {v.path} sent by {who}{body}{ids}.{anchor}");
+    if traced_status(hc.trace, hc.status) >= 400 {
+        return False;
+    }
+    return judge_outcome(f"{v.method} {v.path}", hc.trace, who) in [Outcome.OTHER_USER, Outcome.ADMIN_ONLY, Outcome.SECRET];
 }
 
 """The final HTTP status in a trace: the last status code the trace names (the
@@ -437,7 +473,6 @@ obj Confirmed {
 """Keep the first `limit` candidates the referee agrees are exploitable. `more`
 is True when candidates were left unchecked for a later pass."""
 def confirm_static(files: dict[str, str], candidates: list[Vuln], limit: int) -> Confirmed {
-    code = backend_blob(files);
     todo = dedupe_vulns(candidates);
     out: list[Vuln] = [];
     checked = 0;
@@ -446,7 +481,7 @@ def confirm_static(files: dict[str, str], candidates: list[Vuln], limit: int) ->
             break;
         }
         checked += 1;
-        if still_exploitable(code, v) {
+        if still_exploitable(files, v) {
             out = out + [v];
         }
     }
@@ -494,10 +529,9 @@ def static_fix(files: dict[str, str], vulns: list[Vuln], n: int) -> StaticFix {
 """Judge each confirmed hole against the patched code: closed when the referee
 says it's no longer exploitable. Nothing closes if the patch changed nothing."""
 def static_findings(fixed: dict[str, str], vulns: list[Vuln], patched: bool) -> list[Finding] {
-    code = backend_blob(fixed);
     return [
         Finding(method=v.method, path=v.path, as_user=v.as_user, vuln_class=v.vuln_class,
-                why=v.why, closed=patched and not still_exploitable(code, v))
+                why=v.why, closed=patched and not still_exploitable(fixed, v))
         for v in vulns
     ];
 }
@@ -742,6 +776,25 @@ obj GatedFix {
 
 glob FLASK_FIX_TRIES: int = 2;
 
+"""The health checks a candidate file map fails, spelled out for Blue:
+who sends what, and what must come back."""
+def failed_checks(files: dict[str, str]) -> str {
+    specs: dict[str, dict[str, any]] = {};
+    for c in read_manifest().get("health_checks", []) {
+        specs[c["name"]] = c;
+    }
+    out: list[str] = [];
+    for r in run_sandbox_files(files, [], True).health.results {
+        if not r.ok {
+            c = specs.get(r.name, {});
+            who = c.get("as") or "an anonymous caller";
+            want = f"status {c.get('expect_status', '?')}" + (f" containing '{c['expect_contains']}'" if c.get("expect_contains") and "{" not in c.get("expect_contains", "") else "");
+            out = out + [f"'{r.name}': {c.get('method', 'GET')} {c.get('path', '?')} by {who} must return {want}"];
+        }
+    }
+    return "; ".join(out) if out else "unknown health check";
+}
+
 """Referee gate for runnable apps: keep Blue's patch only if the app's health
 checks still pass AND it closes at least one confirmed exploit. Otherwise
 retry once with the rejection as feedback; if that fails too, discard the
@@ -757,7 +810,8 @@ def gated_fix(files: dict[str, str], blob: str, exploit_lines: str, confirmed: l
             return GatedFix(files=fixed, verdict=rep, summary=patch.summary,
                             changed=[p for p in files.keys() if fixed.get(p) != files[p]]);
         }
-        why = "it broke the app's normal behavior (health checks failed)" if not rep.health_ok else "the exploits still worked";
+        why = f"it broke legitimate requests that must keep working: {failed_checks(fixed)}" if not rep.health_ok else "the exploits still worked";
+        print(f"[audit] referee rejected patch (try {attempt + 1}): {why}; Blue edited {[e.path for e in patch.edits]}");
         feedback = f"\nYour previous patch was REJECTED by the referee because {why}. Fix the holes while keeping legitimate requests working.";
         live_event(f"Referee rejected Blue's patch: {why}. Retrying.");
     }
