@@ -10,7 +10,7 @@ import sys;
 import json;
 import tempfile;
 import subprocess;
-import from config { target_manifest_path }
+import from config { target_manifest_path, read_manifest }
 
 glob RUNNER: str = "sandbox/runner.py";
 glob EDITOR: str = "sandbox/edit.py";
@@ -70,13 +70,34 @@ def run_sandbox(source: str, attacks: list[AttackReq], health: bool = False) -> 
     src_path = src_fd.name;
     src_fd.write(source);
     src_fd.close();
-
     job = {
         "source_file": src_path,
         "manifest_file": os.path.abspath(target_manifest_path()),
         "attacks": [_attack_to_dict(a) for a in attacks],
         "health": health
     };
+    r = _exec_runner(job);
+    os.unlink(src_path);
+    return r;
+}
+
+"""Run a whole multi-file app (a {relpath: contents} map) in the sandbox: the
+runner materializes every file into a temp dir with the folder on the import
+path, so an entry that imports sibling modules loads and runs."""
+def run_sandbox_files(files: dict[str, str], attacks: list[AttackReq], health: bool = False) -> SandboxResult {
+    m = read_manifest();
+    job = {
+        "files": files,
+        "entry": m.get("entry", "app.py"),
+        "manifest_file": os.path.abspath(target_manifest_path()),
+        "attacks": [_attack_to_dict(a) for a in attacks],
+        "health": health
+    };
+    return _exec_runner(job);
+}
+
+"""Shared core: write the job, shell out to the runner under a timeout, parse."""
+def _exec_runner(job: dict[str, any]) -> SandboxResult {
     job_fd = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False);
     job_path = job_fd.name;
     json.dump(job, job_fd);
@@ -97,7 +118,6 @@ def run_sandbox(source: str, attacks: list[AttackReq], health: bool = False) -> 
     } except Exception as e {
         load_error = f"sandbox failed: {e}";
     }
-    os.unlink(src_path);
     os.unlink(job_path);
 
     outcomes = [
