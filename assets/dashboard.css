@@ -189,3 +189,11 @@ h1, h2, p { margin: 0; }
   background: none; border: 1px solid transparent; border-radius: 5px; padding: 4px 9px; cursor: pointer; }
 .filetab:hover { background: var(--bg); }
 .filetab.is-active { background: var(--bg); color: var(--ink); border-color: var(--line-strong); }
+
+/* Site picker */
+.site-pick { display: inline-flex; flex-direction: column; gap: 2px; margin-right: 4px; }
+.site-pick-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.site-select { font: inherit; font-size: 14px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 6px 10px; cursor: pointer; }
+.site-select:hover:not(:disabled) { border-color: var(--ink-2); }
+.site-select:disabled { color: var(--muted); }

@@ -2,9 +2,16 @@
   "name": "Deployment Dashboard",
   "entry": "main.go",
   "app_var": "app",
-  "files": ["main.go"],
-  "users": ["alice", "bob", "admin"],
+  "files": [
+    "main.go"
+  ],
+  "users": [
+    "alice",
+    "bob",
+    "admin"
+  ],
   "attacker": "alice",
   "secret_hint": "Debug/config data and admin credentials should never be reachable by a low-privilege or anonymous caller.",
-  "health_checks": []
+  "health_checks": [],
+  "mode": "scan"
 }

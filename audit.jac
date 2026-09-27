@@ -8,7 +8,7 @@ import json;
 import os;
 
 import from jaclang.byllm.lib { Model }
-import from config { read_manifest, target_source_path, secret_hint, target_name, attacker_user }
+import from config { read_manifest, target_source_path, secret_hint, target_name, attacker_user, active_dir }
 import from sandbox { AttackReq, run_sandbox_files }
 import from live { live_begin, live_draft, live_event, live_end }
 
@@ -253,7 +253,8 @@ node Auditor {
     has name: str = "auditor",
         passes_done: int = 0,
         finished: bool = False,
-        working_json: str = "";
+        working_json: str = "",
+        target_dir: str = "";
 }
 
 node Pass {
@@ -279,15 +280,32 @@ def _files_from_json(blob: str) -> dict[str, str] {
     return parsed;
 }
 
-"""Get-or-create the Auditor, seeding its working copy from the target on disk."""
+"""Get-or-create the Auditor, seeding its working copy from the target on disk.
+If the active target changed since the last run, the stale passes and working
+copy are cleared and reseeded so the dashboard never shows another site's run."""
 def auditor -> Auditor {
+    cur = active_dir();
     found = [root -->[?:Auditor]];
     if found {
-        return found[0];
+        a = found[0];
+        if a.target_dir != cur {
+            _reseed(a, cur);
+        }
+        return a;
     }
     a = root ++> Auditor(name="auditor");
-    a.working_json = _files_to_json(read_target_files());
+    _reseed(a, cur);
     return a;
+}
+
+def _reseed(a: Auditor, dir: str) -> None {
+    for p in [a ->:Did:->[?:Pass]] {
+        del p;
+    }
+    a.passes_done = 0;
+    a.finished = False;
+    a.working_json = _files_to_json(read_target_files());
+    a.target_dir = dir;
 }
 
 def audit_passes -> list[Pass] {
@@ -371,14 +389,8 @@ def:pub audit_step -> None {
 """Reseed the working copy from the target on disk and clear all passes."""
 def:pub reset_audit -> int {
     a = auditor();
-    ps = audit_passes();
-    n = len(ps);
-    for p in ps {
-        del p;
-    }
-    a.passes_done = 0;
-    a.finished = False;
-    a.working_json = _files_to_json(read_target_files());
+    n = len(audit_passes());
+    _reseed(a, active_dir());
     return n;
 }
 
@@ -418,6 +430,7 @@ obj TargetFile {
 
 obj AuditState {
     has target: str,
+        mode: str,
         passes_done: int,
         finished: bool,
         total_found: int,
@@ -462,8 +475,9 @@ def:pub get_audit_state -> AuditState {
             health = p.health_ok;
         }
     }
+    md: dict[str, any] = read_manifest();
     return AuditState(
-        target=target_name(), passes_done=a.passes_done, finished=a.finished,
+        target=target_name(), mode=md.get("mode", "fix"), passes_done=a.passes_done, finished=a.finished,
         total_found=total_found, total_open=total_open, health_ok=health,
         files=tf, passes=infos
     );

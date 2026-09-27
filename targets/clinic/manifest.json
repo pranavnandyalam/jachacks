@@ -1,0 +1,18 @@
+{
+  "name": "HealthDesk",
+  "entry": "app.py",
+  "app_var": "app",
+  "files": ["app.py"],
+  "mode": "fix",
+  "users": ["alice", "bob", "admin"],
+  "attacker": "alice",
+  "secret_hint": "A confidential diagnosis is stored on the doctor's record and in the app config. Some endpoints may not check who is asking.",
+  "health_checks": [
+    {"name": "public health", "method": "GET", "path": "/health", "as": null, "expect_status": 200},
+    {"name": "alice sees her profile", "method": "GET", "path": "/me", "as": "alice", "expect_status": 200, "expect_contains": "alice"},
+    {"name": "alice reads her own record", "method": "GET", "path": "/records/REC-1001", "as": "alice", "expect_status": 200, "expect_contains": "REC-1001"},
+    {"name": "alice lists her records", "method": "GET", "path": "/records", "as": "alice", "expect_status": 200, "expect_contains": "REC-1001"},
+    {"name": "doctor reads the confidential record", "method": "GET", "path": "/records/REC-0001", "as": "admin", "expect_status": 200, "expect_contains": "{FLAG}"},
+    {"name": "doctor views all records", "method": "GET", "path": "/admin/records", "as": "admin", "expect_status": 200, "expect_contains": "{FLAG}"}
+  ]
+}

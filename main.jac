@@ -5,6 +5,7 @@ rewrites the code to fix them, a referee gates every patch) plus the client UI.
 """
 
 import from audit { run_audit, audit_step, reset_audit, run_audit_loop, get_audit_state, scan_target }
+import from config { list_targets, set_active_target }
 import from arena { run_game, step_round, red_turn, blue_turn, get_game_state, reset_game, get_rejected_patches, get_current_source, get_line_origins }
 import from live { get_live }
 

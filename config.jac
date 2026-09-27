@@ -6,15 +6,81 @@ manifest.json in a folder and point TARGET_DIR at it."""
 import os;
 import json;
 
-# The folder holding the current target's app.py and manifest.json.
+# The default target when nothing has been picked (env or "target").
 glob TARGET_DIR: str = os.environ.get("RQ_TARGET_DIR", "target");
 
+# The picked target persists on the graph so the dashboard can switch sites at
+# runtime; falls back to TARGET_DIR when nothing is picked yet.
+node TargetChoice {
+    has dir: str;
+}
+
+def active_dir -> str {
+    found = [root -->[?:TargetChoice]];
+    if found {
+        return found[0].dir;
+    }
+    return TARGET_DIR;
+}
+
+"""Switch the active target to `name` (a folder with a manifest.json). Returns
+False if there's no such target."""
+def:pub set_active_target(name: str) -> bool {
+    if not os.path.isfile(os.path.join(name, "manifest.json")) {
+        return False;
+    }
+    found = [root -->[?:TargetChoice]];
+    if found {
+        found[0].dir = name;
+    } else {
+        root ++> TargetChoice(dir=name);
+    }
+    return True;
+}
+
+obj TargetInfo {
+    has dir: str,
+        name: str,
+        mode: str,
+        files: int,
+        active: bool;
+}
+
+"""Every example site available to pick: `target/` plus each folder under
+`targets/` that has a manifest. mode is 'fix' (full harden loop, single-file
+Flask we can run) or 'scan' (find-only, e.g. other languages)."""
+def:pub list_targets -> list[TargetInfo] {
+    dirs: list[str] = [];
+    if os.path.isfile(os.path.join("target", "manifest.json")) {
+        dirs = dirs + ["target"];
+    }
+    if os.path.isdir("targets") {
+        for d in sorted(os.listdir("targets")) {
+            full = os.path.join("targets", d);
+            if os.path.isfile(os.path.join(full, "manifest.json")) {
+                dirs = dirs + [full];
+            }
+        }
+    }
+    cur = active_dir();
+    out: list[TargetInfo] = [];
+    for d in dirs {
+        m: dict[str, any] = json.loads(open(os.path.join(d, "manifest.json")).read());
+        nfiles = len(m.get("files", [m.get("entry", "app.py")]));
+        out = out + [TargetInfo(
+            dir=d, name=m.get("name", d), mode=m.get("mode", "fix"),
+            files=nfiles, active=(d == cur)
+        )];
+    }
+    return out;
+}
+
 def target_source_path -> str {
-    return os.path.join(TARGET_DIR, "app.py");
+    return os.path.join(active_dir(), "app.py");
 }
 
 def target_manifest_path -> str {
-    return os.path.join(TARGET_DIR, "manifest.json");
+    return os.path.join(active_dir(), "manifest.json");
 }
 
 def read_manifest -> dict[str, any] {
