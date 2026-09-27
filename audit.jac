@@ -27,7 +27,7 @@ obj Vuln {
         vuln_class: str,
         why: str;
 }
-sem Vuln = "One HTTP request that should leak protected data because of a flaw in the code.";
+sem Vuln = "One HTTP request that, because of a flaw in the code, leaks protected data or performs an action the caller should not be allowed to.";
 sem Vuln.method = "HTTP method: GET, POST, etc.";
 sem Vuln.path = "Exact URL path from a route in the code, e.g. /members/admin/notes.";
 sem Vuln.as_user = "The username to send as (a low-privilege user), or empty string for no login.";
@@ -39,7 +39,7 @@ obj VulnReport {
 }
 sem VulnReport = "Every distinct weakness you can find, one entry each.";
 
-sem find_vulns = "You are Red, a white-box security auditor. You are given the full source of a small web app (one or more files) and a note on what secret to make it leak. Read ALL the files and list EVERY distinct request that should return the secret to a low-privilege caller because of a missing authorization or ownership check, an unprotected endpoint, or a leak. One entry per weakness; do not repeat the same endpoint.";
+sem find_vulns = "You are Red, a white-box security auditor. You are given the full source of a small web app (one or more files) and a note on what secret to make it leak. Read ALL the files and list EVERY distinct request a low-privilege caller could use to read protected data (another user's records, admin-only data, secrets, tokens, password hashes) or to perform a forbidden action (change or delete another user's data, admin-only operations), because of a missing login, role or ownership check, an unprotected endpoint, or a leak. Check every route, including write routes (POST, PUT, PATCH, DELETE). One entry per weakness; do not repeat the same endpoint.";
 sem find_vulns.code = "The full source of the target app, each file under a '=== FILE: name ===' header.";
 sem find_vulns.hint = "Who you are logged in as and what secret to look for.";
 def find_vulns(code: str, hint: str) -> VulnReport by scanner(temperature=0.3);
@@ -253,7 +253,7 @@ def:pub run_audit -> AuditReport {
 def _bookclub_files -> dict[str, str] {
     base = "targets/bookclub";
     out: dict[str, str] = {};
-    for name in ["app.py", "members.py", "admin.py", "store.py"] {
+    for name in ["app.py", "members.py", "admin.py", "books.py", "store.py"] {
         out[name] = open(os.path.join(base, name)).read();
     }
     return out;
@@ -298,9 +298,8 @@ test "audit mechanics: multi-file confirm, apply, verify (no LLM)" {
 # unappliable patches are discarded, so the working copy always parses.
 
 glob STATIC_FIX_TRIES: int = 2;
-# Without a runtime, extra passes mostly chase Red's false alarms and churn
-# correct code, so static audits stop as soon as a pass closes everything.
-glob STATIC_MAX_PASSES: int = 4;
+# Cap on passes for apps we can't run (each pass is a scan + fix + re-check).
+glob STATIC_MAX_PASSES: int = 5;
 
 """True when the target is a Flask app we run in-process (manifest mode 'fix')."""
 def is_runnable -> bool {
@@ -361,7 +360,8 @@ agreeing with the claim. It's a hole if the code lets the request through
 def still_exploitable(code: str, v: Vuln) -> bool {
     who = v.as_user if v.as_user else "an anonymous caller (no login)";
     body = "" if v.method.upper() in ["GET", "HEAD", "DELETE"] else " with a valid JSON body";
-    hc = check_hole(code, f"{v.method} {v.path} sent by {who}{body}");
+    ids = " (each id or placeholder in the path refers to an existing record owned by a DIFFERENT user)" if any(c in v.path for c in [":", "{", "<"]) or any(s.isdigit() for s in v.path.split("/")) else "";
+    hc = check_hole(code, f"{v.method} {v.path} sent by {who}{body}{ids}");
     return traced_status(hc.trace, hc.status) < 400;
 }
 
@@ -668,10 +668,9 @@ def static_step(a: Auditor) -> None {
         files_changed_json=json.dumps(changed), findings_json=findings_j,
         diffs_json=_diffs(files, fixed)
     );
-    # Done when a pass is clean, or closes everything with nothing left to
-    # check, Blue is stuck (changed nothing), or the cap.
-    all_closed = closed_n == len(vulns) and not conf.more;
-    if len(vulns) == 0 or all_closed or len(changed) == 0 or n >= STATIC_MAX_PASSES {
+    # Done when a scan comes back clean, Blue is stuck (changed nothing), or
+    # the cap -- same as runnable apps, so a clean confirming scan ends it.
+    if len(vulns) == 0 or len(changed) == 0 or n >= STATIC_MAX_PASSES {
         a.finished = True;
     }
 }

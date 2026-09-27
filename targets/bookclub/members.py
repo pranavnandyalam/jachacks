@@ -21,5 +21,4 @@ def member_notes(name):
         return jsonify({"error": "login required"}), 401
     if name not in NOTES:
         return jsonify({"error": "not found"}), 404
-    # BUG: returns anyone's notes to any logged-in member.
     return jsonify({"name": name, "notes": NOTES[name]})

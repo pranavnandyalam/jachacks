@@ -11,5 +11,4 @@ def export_all():
     user = current_user()
     if user is None:
         return jsonify({"error": "login required"}), 401
-    # BUG: no admin-role check, so any member can export every note.
     return jsonify(NOTES)

@@ -21,6 +21,13 @@ NOTES = {
     "admin": "Club master key: " + SECRET,
 }
 
+# Reading lists by id. Each belongs to one member; the admin's is private.
+LISTS = {
+    1: {"id": 1, "owner": "alice", "title": "Summer sci-fi", "books": ["Dune", "Hyperion"]},
+    2: {"id": 2, "owner": "bob", "title": "Classics", "books": ["1984", "Emma"]},
+    3: {"id": 3, "owner": "admin", "title": "Admin vault", "books": ["Master key: " + SECRET]},
+}
+
 
 def current_user():
     auth = request.headers.get("Authorization", "")
