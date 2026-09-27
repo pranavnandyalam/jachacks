@@ -29,18 +29,41 @@ This is the part we care most about: Red Queen never takes an agent's word for i
 
 Everything the agents do lives on a **Jac graph**: an `Auditor` node with one `Pass` node per round (findings, Blue's summary, per-file diffs, verdicts), and the working copy of the code that each accepted patch advances.
 
+```mermaid
+flowchart LR
+    subgraph Browser["Browser (jac-client, React in Jac)"]
+        UI["Dashboard<br/>passes · diffs · code viewer"]
+        Voice["Ask Red Queen<br/>voice button"]
+    end
+
+    subgraph Server["Jac server (def:pub endpoints, hosted on JacHammer)"]
+        Loop["Audit loop<br/>audit.jac"]
+        Red["Red · attacker<br/>by llm → VulnReport"]
+        Blue["Blue · defender<br/>by llm → PatchSet / EditPlan"]
+        Ref["Referee<br/>deterministic checks + trace judge"]
+        Graph[("Jac graph<br/>Auditor · Pass · Vulnerability<br/>PatchAttempt · FileVersion")]
+        VoiceAPI["voice.jac<br/>signed session + audit brief"]
+    end
+
+    Verify["Verification<br/>Flask: sandbox replays exploits + health checks<br/>Go / TS / FastAPI: gofmt · py_compile · TypeScript"]
+
+    LLM["LLM<br/>gpt-4.1-mini via RQ_MODEL"]
+    Eleven["ElevenLabs Agents<br/>speech ↔ LLM ↔ voice"]
+    Targets["Target apps<br/>source + manifest.json"]
+
+    UI -- "harden / poll state" --> Loop
+    Loop --> Red --> Ref
+    Ref -- "confirmed holes" --> Blue --> Ref
+    Red & Blue & Ref -. "typed calls" .-> LLM
+    Ref -- "proves fixes" --> Verify
+    Loop -- "records every round" --> Graph
+    Targets --> Loop
+    Voice -- "session + brief" --> VoiceAPI
+    VoiceAPI --> Graph
+    Voice <-- "live conversation" --> Eleven
 ```
-             ┌──────────── Auditor (graph node) ────────────┐
-             │  working copy of the code · Pass nodes        │
-             └──────────────────────────────────────────────┘
-                 │ scan            │ patch            │ verify
-            ┌────▼────┐       ┌────▼────┐      ┌──────▼───────┐
-            │   Red   │──────▶│  Blue   │─────▶│   Referee    │
-            │ by llm  │ holes │ by llm  │ diff │ deterministic│
-            └─────────┘       └─────────┘      │ sandbox /    │
-                 ▲                              │ compile+trace│
-                 └──────── next round ◀─────────┴──────────────┘
-```
+
+More diagrams (one hardening round, the graph schema): [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). PNG versions are in `docs/img/`.
 
 - **Agents are typed `by llm` functions** that return structured objects (`VulnReport`, `PatchSet`, `EditPlan`, `HoleCheck`), not free text.
 - **The referee is deterministic** wherever possible: sandboxed exploit replay, health checks, syntax checks.
