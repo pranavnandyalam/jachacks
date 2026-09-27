@@ -104,3 +104,10 @@ secrets.
       `x.count += 1` is applied twice.
     - A recall "strength" boost went 1.0 → 1.30 instead of 1.15 on the first request
       after every restart. With the flag set it was a correct 1.15 every time.
+
+14. **Demo / long runs: serve with `--no-dev`** — `JAC_DB_RO_UNITS=0 jac run --no-dev main.jac`
+    (UI + API on :8000, prebuilt bundle, no file watcher). Plain `jac run main.jac`
+    defaults to dev mode, and the dev watcher also watches `.git/`: a background git
+    fetch (or a git GUI writing `.git/gk`) hot-reloads the server MID-MATCH, which
+    wipes the live-progress state and resets the page (verified 2026-09-26). Use
+    `--dev` only while editing UI code.

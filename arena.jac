@@ -16,11 +16,12 @@ find) or MAX_ROUNDS is hit. `step_round` runs exactly one round so the dashboard
 can poll and animate; `run_game` loops it to completion.
 """
 
-import from codebase { codebase, current_source, commit_version, reset_codebase, all_versions }
+import from codebase { codebase, current_source, commit_version, reset_codebase, all_versions, line_origins }
 import from attacker { run_red_turn, reset_red, AttackResult }
 import from defender { make_patch, ExploitBrief, Patch }
 import from referee { verify, record_exploit, reset_referee, confirmed_exploits, Verdict }
 import from sandbox { AttackReq, resolve_func, splice_function }
+import from live { live_begin, live_draft, live_event, live_end }
 
 glob MAX_ROUNDS: int = 14;
 glob MAX_MISSES: int = 5;
@@ -231,19 +232,23 @@ def _blue_defend(red: AttackResult, round_n: int) -> GameRound {
     func = resolve_func(src, red.method, red.path);
 
     feedback = "";
+    live_draft(1);
     patch = make_patch(src, brief, feedback, 1);
     j = _judge(src, patch, func, target_req);
     candidate = j.candidate;
     verdict = j.verdict;
     attempts = 1;
+    _announce(attempts, verdict);
     while not verdict.accepted and attempts < MAX_PATCH_ATTEMPTS {
         record_rejected(round_n, red.path, attempts, verdict.reason, patch);
+        live_draft(attempts + 1);
         feedback = f"Attempt {attempts} was REJECTED: {verdict.reason}. Return the COMPLETE valid Python file. Change ONLY the {func} handler for {red.path}; leave every other line byte-for-byte identical.";
         patch = make_patch(src, brief, feedback, attempts + 1);
         j = _judge(src, patch, func, target_req);
         candidate = j.candidate;
         verdict = j.verdict;
         attempts += 1;
+        _announce(attempts, verdict);
     }
 
     version = codebase().head;
@@ -268,6 +273,28 @@ def _blue_defend(red: AttackResult, round_n: int) -> GameRound {
         exploit_blocked=verdict.exploit_blocked, regressions_ok=verdict.regressions_ok,
         health_ok=live_health_ok, version=version, diff=diff
     );
+}
+
+"""Publish the referee's ruling on a draft to the live feed."""
+def _announce(attempt: int, v: Verdict) {
+    if v.accepted {
+        live_event(f"Draft {attempt}: referee ACCEPTED (exploit closed, no regressions, app healthy)");
+    } else {
+        live_event(f"Draft {attempt}: {v.reason}");
+    }
+}
+
+"""For each line of the current source: the round whose Blue patch introduced
+it, or 0 if it is from the original app. Lets the dashboard highlight every
+change Blue has made, not just the latest."""
+def:pub get_line_origins -> list[int] {
+    round_of: dict[int, int] = {};
+    for r in arena_rounds() {
+        if r.blue_accepted {
+            round_of[r.version] = r.n;
+        }
+    }
+    return [round_of.get(v, 0) if v > 0 else 0 for v in line_origins()];
 }
 
 def _user_of(identity: str) -> str {
@@ -320,7 +347,12 @@ def:pub red_turn -> RoundInfo {
         return _empty_round(ar.rounds_played);
     }
     turn = ar.rounds_played + 1;
-    red = run_red_turn(current_source(), turn);
+    live_begin("red", turn);
+    try {
+        red = run_red_turn(current_source(), turn);
+    } finally {
+        live_end();
+    }
     gr = GameRound(
         n=turn, red_method=red.method, red_path=red.path, red_identity=red.identity,
         red_vuln=red.vuln_class, red_hypothesis=red.hypothesis, red_breached=red.breached,
@@ -359,10 +391,12 @@ def:pub blue_turn -> RoundInfo {
         status=gr.red_status, note=""
     );
     BUSY["blue"] = True;
+    live_begin("blue", gr.n);
     try {
         defended = _blue_defend(red, gr.n);
     } finally {
         BUSY["blue"] = False;
+        live_end();
     }
     gr.blue_summary = defended.blue_summary;
     gr.blue_accepted = defended.blue_accepted;

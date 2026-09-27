@@ -3,7 +3,7 @@
 #
 #   python3 .claude/skills/check-in/match.py [N=3] [base=http://localhost:8000]
 #
-# Requires the server:  JAC_DB_RO_UNITS=0 jac run --dev --no-client main.jac
+# Requires the server:  JAC_DB_RO_UNITS=0 jac run --no-dev --no-client main.jac
 import json
 import os
 import subprocess

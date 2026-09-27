@@ -3,7 +3,7 @@
 import from ..arena { RoundInfo }
 import from .DiffView { DiffView }
 
-def:pub RoundCard(r: RoundInfo, blueBusy: bool, rejections: int) -> JsxElement {
+def:pub RoundCard(r: RoundInfo, blueBusy: bool, rejections: int, liveEvents: list[str]) -> JsxElement {
     pending: bool = r.red_breached and r.blue_attempts == 0;
     red_cls: str = "rc-red breach" if r.red_breached else "rc-red miss";
     who: str = "anonymous" if r.red_identity == "anon" else r.red_identity;
@@ -28,12 +28,12 @@ def:pub RoundCard(r: RoundInfo, blueBusy: bool, rejections: int) -> JsxElement {
             </p>
         </div>
         {if r.red_breached {
-            <BlueBlock r={r} pending={pending} blueBusy={blueBusy} rejections={rejections}/>
+            <BlueBlock r={r} pending={pending} blueBusy={blueBusy} rejections={rejections} liveEvents={liveEvents}/>
         }}
     </div>
 }
 
-def:pub BlueBlock(r: RoundInfo, pending: bool, blueBusy: bool, rejections: int) -> JsxElement {
+def:pub BlueBlock(r: RoundInfo, pending: bool, blueBusy: bool, rejections: int, liveEvents: list[str]) -> JsxElement {
     <div className="rc-blue">
         <div className="rc-row">
             <span className="tag tag-blue">BLUE</span>
@@ -45,6 +45,13 @@ def:pub BlueBlock(r: RoundInfo, pending: bool, blueBusy: bool, rejections: int) 
                 <span className="rc-summary">{r.blue_summary}</span>
             }}
         </div>
+        {if pending and len(liveEvents) > 0 {
+            <ul className="live-events">
+                {for (i, ev) in enumerate(liveEvents) {
+                    <li key={str(i)} className={"ok" if "ACCEPTED" in ev else "bad"}>{ev}</li>
+                }}
+            </ul>
+        }}
         {if not pending {
             <div className="rc-verdict">
                 <span className={"chk " + ("ok" if r.exploit_blocked else "bad")}>{("✓" if r.exploit_blocked else "✗") + " exploit closed"}</span>

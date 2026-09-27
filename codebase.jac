@@ -60,6 +60,37 @@ def current_source -> str {
     return v.source if v is not None else "";
 }
 
+def _version_no(v: CodeVersion) -> int {
+    return v.version;
+}
+
+"""For each line of the current source, the version that introduced it (0 = the
+original). Traced version by version with difflib, so a line keeps its origin
+even as later patches shift it around."""
+def line_origins -> list[int] {
+    vs = sorted(all_versions(), key=_version_no);
+    if not vs {
+        return [];
+    }
+    prev = vs[0].source.splitlines();
+    origins = [0 for _ in prev];
+    for v in vs[1:] {
+        cur = v.source.splitlines();
+        nxt = [v.version for _ in cur];
+        sm = difflib.SequenceMatcher(None, prev, cur, autojunk=False);
+        for (tag, i1, i2, j1, j2) in sm.get_opcodes() {
+            if tag == "equal" {
+                for k in range(i2 - i1) {
+                    nxt[j1 + k] = origins[i1 + k];
+                }
+            }
+        }
+        origins = nxt;
+        prev = cur;
+    }
+    return origins;
+}
+
 """Append a new accepted version and advance HEAD. Returns the new version no."""
 def commit_version(source: str, author: str, summary: str) -> int {
     cb = codebase();
@@ -118,4 +149,21 @@ test "reset_codebase returns to a single v0" {
     reset_codebase();
     assert len(all_versions()) == 1;
     assert codebase().head == 0;
+}
+
+test "line_origins tags each line with the version that introduced it" {
+    reset_codebase();
+    seed = current_source();
+    v1 = seed.replace("    # TODO: check ownership\n", "    if inv[\"owner\"] != user[\"name\"]:\n        return jsonify({}), 403\n");
+    commit_version(v1, "blue", "idor");
+    v2 = "# new header line\n" + v1;
+    commit_version(v2, "blue", "header");
+    o = line_origins();
+    lines = current_source().splitlines();
+    assert len(o) == len(lines);
+    assert o[0] == 2;
+    i = lines.index("    if inv[\"owner\"] != user[\"name\"]:");
+    assert o[i] == 1;
+    assert o[1] == 0;
+    reset_codebase();
 }

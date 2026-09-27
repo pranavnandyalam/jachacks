@@ -42,7 +42,7 @@ flag detection works. If the target was swapped, update the probe's ATTACKS list
 ## 4. Live matches (skip if `quick`)
 
 Start the server in the background:
-`JAC_DB_RO_UNITS=0 jac run --dev --no-client main.jac` (the API is on :8000; wait until
+`JAC_DB_RO_UNITS=0 jac run --no-dev --no-client main.jac` (the API is on :8000; never `--dev` here: its file watcher restarts the server when `.git/` changes, killing matches mid-round; wait until
 `POST /function/get_current_source` returns `"ok": true`).
 Then `python3 .claude/skills/check-in/match.py 3` (run it in the background, ~1 min per match).
 It plays full matches over HTTP and probes each final source independently.

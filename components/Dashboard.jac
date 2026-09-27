@@ -1,19 +1,22 @@
-"""Red Queen live dashboard. Everything shown comes from the running engine:
-Red and Blue are separate server calls (red_turn, blue_turn), so the page shows
-Red's hit the moment it lands and Blue's patch when the referee rules on it.
-Nothing is simulated client-side; the only local value is the elapsed timer."""
+"""Red Queen live dashboard. Everything shown comes from the running engine.
+Red and Blue are separate server calls (red_turn, blue_turn), and the server
+publishes live progress (get_live: phase, round, Blue's draft number, each
+referee ruling), so every viewer sees the round in flight, not a spinner."""
 
 import from "react" { useEffect }
 import from ..arena {
     GameState, RoundInfo, RejectedInfo,
     red_turn, blue_turn, reset_game, get_game_state,
-    get_rejected_patches, get_current_source
+    get_rejected_patches, get_current_source, get_line_origins
 }
+import from ..live { LiveInfo, get_live }
 import from .RoundCard { RoundCard }
 import from .CodeView { CodeView }
 import from .Scoreboard { Scoreboard }
+import from .HowItWorks { HowItWorks }
 
 glob _seq: int = 0;
+glob _lastLivePhase: str = "idle";
 glob NET_ERR: str = "Can't reach the engine: ";
 
 def by_n(r: RoundInfo) -> int {
@@ -24,11 +27,11 @@ def:pub Dashboard -> JsxElement {
     has game: GameState | None = None,
         rejected: list[RejectedInfo] = [],
         source: str = "",
+        origins: list[int] = [],
+        live: LiveInfo | None = None,
         phase: str = "idle",
         auto: bool = False,
-        err: str = "",
-        phaseStart: float = 0.0,
-        now: float = 0.0;
+        err: str = "";
 
     # Every refresh takes a ticket; a response is applied only if no newer refresh
     # started meanwhile, so a slow poll can never overwrite fresher state (e.g. a
@@ -40,10 +43,12 @@ def:pub Dashboard -> JsxElement {
             g = await get_game_state();
             rj = await get_rejected_patches();
             src = await get_current_source();
+            og = await get_line_origins();
             if ticket == _seq {
                 game = g;
                 rejected = rj;
                 source = src;
+                origins = og;
                 if err.startswith(NET_ERR) {
                     err = "";
                 }
@@ -53,20 +58,29 @@ def:pub Dashboard -> JsxElement {
         }
     }
 
-    def start_phase(p: str) {
-        phase = p;
-        phaseStart = Date.now();
-        now = phaseStart;
+    # Live progress, polled every second. When the server finishes a phase that
+    # someone else started (another tab), pull the new state right away.
+    async def poll_live {
+        try {
+            li = await get_live();
+            live = li;
+            if _lastLivePhase != "idle" and li.phase == "idle" and phase == "idle" {
+                await refresh();
+            }
+            _lastLivePhase = li.phase;
+        } except Exception {
+            live = None;
+        }
     }
 
     """One full round, as two real server calls: Red attacks, then (only if it
     breached) Blue patches under the referee."""
     async def play_round {
-        start_phase("red");
+        phase = "red";
         r = await red_turn();
         await refresh();
         if r.red_breached and r.blue_attempts == 0 {
-            start_phase("blue");
+            phase = "blue";
             await blue_turn();
             await refresh();
         }
@@ -151,32 +165,30 @@ def:pub Dashboard -> JsxElement {
 
     async can with entry {
         await refresh();
+        await poll_live();
     }
 
-    # Poll the engine while idle, so the page also reflects matches driven from
-    # elsewhere (another tab, the check-in script). Plus a 1s tick for the timer.
+    # State poll every 3s while idle (catches matches driven from elsewhere) and
+    # the live-progress poll every 1s.
     useEffect(lambda {
         poll = setInterval(lambda { if phase == "idle" { refresh(); } }, 3000);
-        tick = setInterval(lambda { now = Date.now(); }, 1000);
-        return lambda { clearInterval(poll); clearInterval(tick); };
+        livePoll = setInterval(lambda { poll_live(); }, 1000);
+        return lambda { clearInterval(poll); clearInterval(livePoll); };
     }, []);
 
     rounds: list[RoundInfo] = sorted(game.rounds, key=by_n, reverse=True) if game else [];
-    last_diff: str = "";
-    for r in rounds {
-        if r.diff and not last_diff {
-            last_diff = r.diff;
-        }
-    }
-    busy: bool = phase != "idle";
+    serverBusy: bool = bool(live and live.phase != "idle");
+    busy: bool = phase != "idle" or serverBusy;
     finished: bool = bool(game and game.finished);
-    secs: int = int((now - phaseStart) / 1000) if busy else 0;
+    liveBlue: bool = bool(live and live.phase == "blue");
+    liveRound: int = live.round_n if live else 0;
+    liveEvents: list[str] = live.events if live and live.phase == "blue" else [];
 
     <div className="dash">
         <header className="top">
             <div>
                 <h1 className="title">RED QUEEN</h1>
-                <p className="sub">An AI attacker and an AI defender fight over a real Flask app's source code. A deterministic referee decides every patch.</p>
+                <p className="sub">Two AI agents fight over a real web app's source code. Security evolves one exploit at a time.</p>
             </div>
             <div className="controls">
                 <button className="btn primary" disabled={busy} onClick={on_new_match}>{"New match"}</button>
@@ -187,14 +199,16 @@ def:pub Dashboard -> JsxElement {
                     <button className="btn" disabled={busy or finished or not game or len(rounds) == 0} onClick={on_resume}>{"Resume"}</button>
                 }}
                 <button className="btn ghost" disabled={busy} onClick={on_reset}>{"Reset"}</button>
+                <a className="btn ghost" href="/graph" target="_blank" rel="noreferrer">{"Jac graph ↗"}</a>
             </div>
         </header>
+        <HowItWorks/>
         {if err {
             <div className="err">{err}</div>
         }}
-        <StatusBar phase={phase} secs={secs} game={game} rounds={rounds}/>
+        <StatusBar phase={phase} live={live} game={game}/>
         {if game {
-            <Scoreboard game={game} rejectedCount={len(rejected)}/>
+            <Scoreboard game={game} rejectedCount={len(rejected) + len([ev for ev in liveEvents if "ACCEPTED" not in ev])}/>
         }}
         <main className="grid">
             <section className="feed">
@@ -203,11 +217,17 @@ def:pub Dashboard -> JsxElement {
                     <p className="empty">{"No rounds yet. Press New match: Red reads the code and attacks first."}</p>
                 }}
                 {for r in rounds {
-                    <RoundCard key={str(r.n)} r={r} blueBusy={phase == "blue"} rejections={len([x for x in rejected if x.round_n == r.n])}/>
+                    <RoundCard
+                        key={str(r.n)}
+                        r={r}
+                        blueBusy={phase == "blue" or (liveBlue and liveRound == r.n)}
+                        rejections={len([x for x in rejected if x.round_n == r.n])}
+                        liveEvents={liveEvents if liveRound == r.n else []}
+                    />
                 }}
             </section>
             <section className="side">
-                <CodeView source={source} version={game.current_version if game else 0} lastDiff={last_diff}/>
+                <CodeView source={source} version={game.current_version if game else 0} origins={origins}/>
                 {if len(rejected) > 0 {
                     <RejectedList items={rejected}/>
                 }}
@@ -216,29 +236,39 @@ def:pub Dashboard -> JsxElement {
     </div>
 }
 
-def:pub StatusBar(phase: str, secs: int, game: GameState | None, rounds: list[RoundInfo]) -> JsxElement {
-    cur: RoundInfo | None = rounds[0] if len(rounds) > 0 else None;
-    n: int = (game.rounds_played if game else 0);
+"""What is happening right now. Prefers the server's live progress (true for
+every viewer); falls back to this tab's own phase for the instant between a
+click and the server picking the work up."""
+def:pub StatusBar(phase: str, live: LiveInfo | None, game: GameState | None) -> JsxElement {
+    sp: str = live.phase if live else "idle";
+    eff: str = sp if sp != "idle" else phase;
+    secs: int = live.elapsed_s if live and sp != "idle" else 0;
+    played: int = game.rounds_played if game else 0;
+    # Before the server reports progress: Red works on the NEXT round, Blue on the
+    # round Red just played.
+    n: int = live.round_n if live and sp != "idle" else (played if eff == "blue" else played + 1);
+    draft: int = live.draft if live else 0;
     msg: str = "Ready. Press New match to start.";
     cls: str = "status idle";
-    if phase == "red" {
-        msg = "Round " + str(n + 1) + ": Red is reading the source code and choosing an attack (" + str(secs) + "s)";
+    if eff == "red" {
+        msg = "Round " + str(n) + ": Red is reading the source code and choosing an attack (" + str(secs) + "s)";
         cls = "status red";
-    } elif phase == "blue" and cur {
-        msg = "Round " + str(cur.n) + ": Red leaked the flag via " + cur.red_method + " " + cur.red_path + ". Blue is rewriting the code; the referee re-attacks every draft (" + str(secs) + "s)";
+    } elif eff == "blue" {
+        dtxt: str = (" Draft " + str(draft) + ".") if draft > 0 else "";
+        msg = "Round " + str(n) + ": Red leaked the flag. Blue is rewriting the code; the referee re-attacks every draft." + dtxt + " (" + str(secs) + "s)";
         cls = "status blue";
+    } elif eff == "reset" {
+        msg = "Resetting: code back to v0, Red's memory and the referee's exploit suite wiped.";
     } elif game and game.finished {
         msg = "Match over after " + str(game.rounds_played) + " rounds: Red found " + str(game.breaches) + " hole(s), Blue closed " + str(game.patches_accepted) + ". Code went v0 → v" + str(game.current_version) + ".";
         cls = "status done";
-    } elif phase == "reset" {
-        msg = "Resetting: code back to v0, Red's memory and the referee's exploit suite wiped.";
     } elif game and game.blue_pending {
         msg = "Red's last breach is still waiting for Blue. Press Next round.";
     } elif game and game.rounds_played > 0 {
         msg = "Paused after round " + str(game.rounds_played) + ". Press Next round or Resume.";
     }
     <div className={cls}>
-        {if phase == "red" or phase == "blue" {
+        {if eff == "red" or eff == "blue" {
             <span className="pulse"></span>
         }}
         <span>{msg}</span>
