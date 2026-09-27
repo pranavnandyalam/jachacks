@@ -10,6 +10,7 @@ import os;
 import from jaclang.byllm.lib { Model }
 import from config { read_manifest, target_source_path, secret_hint, target_name, attacker_user }
 import from sandbox { AttackReq, run_sandbox_files }
+import from live { live_begin, live_draft, live_event, live_end }
 
 glob scanner: Model = Model(model_name="ollama_chat/huihui_ai/qwen3-coder-abliterated");
 glob fixer: Model = Model(model_name="ollama_chat/huihui_ai/qwen3-coder-abliterated");
@@ -240,4 +241,234 @@ test "audit mechanics: multi-file confirm, apply, verify (no LLM)" {
     assert rep.fixed == 2;
     assert rep.still_open == 0;
     assert rep.health_ok;
+}
+
+# ---- looping audit: keep fixing until a pass finds nothing -------------------
+
+import difflib;
+
+glob MAX_PASSES: int = 5;
+
+node Auditor {
+    has name: str = "auditor",
+        passes_done: int = 0,
+        finished: bool = False,
+        working_json: str = "";
+}
+
+node Pass {
+    has n: int,
+        found: int,
+        fixed: int,
+        still_open: int,
+        health_ok: bool,
+        summary: str,
+        files_changed_json: str,
+        findings_json: str,
+        diffs_json: str;
+}
+
+edge Did: Auditor --> Pass {}
+
+def _files_to_json(files: dict[str, str]) -> str {
+    return json.dumps(files);
+}
+
+def _files_from_json(blob: str) -> dict[str, str] {
+    parsed: dict[str, str] = json.loads(blob) if blob else {};
+    return parsed;
+}
+
+"""Get-or-create the Auditor, seeding its working copy from the target on disk."""
+def auditor -> Auditor {
+    found = [root -->[?:Auditor]];
+    if found {
+        return found[0];
+    }
+    a = root ++> Auditor(name="auditor");
+    a.working_json = _files_to_json(read_target_files());
+    return a;
+}
+
+def audit_passes -> list[Pass] {
+    return [auditor() ->:Did:->[?:Pass]];
+}
+
+def _diffs(before: dict[str, str], after: dict[str, str]) -> str {
+    out: dict[str, str] = {};
+    for (name, new_body) in after.items() {
+        old_body = before.get(name, "");
+        if old_body != new_body {
+            lines = difflib.unified_diff(
+                old_body.splitlines(), new_body.splitlines(),
+                fromfile=name, tofile=name, lineterm=""
+            );
+            out[name] = "\n".join(lines);
+        }
+    }
+    return json.dumps(out);
+}
+
+"""Run exactly one audit pass over the current working copy: Red scans, Blue
+fixes, referee verifies. Persists the fixed code as the new working copy and
+records the pass. Safe to call after the audit has converged (no-op)."""
+def:pub audit_step -> None {
+    a = auditor();
+    if a.finished {
+        return;
+    }
+    n = a.passes_done + 1;
+    files = _files_from_json(a.working_json);
+    blob = files_blob(files);
+
+    live_begin("scan", n);
+    scan = find_vulns(blob, secret_hint());
+    confirmed = confirm_vulns(files, scan.vulns);
+
+    fixed = files;
+    summary = "";
+    changed: list[str] = [];
+    rep = AuditReport(
+        target=target_name(), files=list(files.keys()), found=0, fixed=0,
+        still_open=0, health_ok=True, summary="", files_changed=[], findings=[]
+    );
+    if confirmed {
+        live_event(f"Found {len(confirmed)} issue(s). Blue is fixing them.");
+        live_draft(1);
+        exploit_lines = "\n".join([
+            f"- {v.method} {v.path} as {v.as_user if v.as_user else 'anon'} [{v.vuln_class}]: {v.why}"
+            for v in confirmed
+        ]);
+        patch = fix_all(blob, exploit_lines);
+        fixed = apply_edits(files, patch.edits);
+        rep = verify_fixes(fixed, confirmed);
+        summary = patch.summary;
+        changed = [e.path for e in patch.edits];
+    } else {
+        rep.health_ok = run_sandbox_files(files, [], True).health.ok;
+        summary = "No vulnerabilities found in this pass.";
+    }
+    live_end();
+
+    a.working_json = _files_to_json(fixed);
+    a.passes_done = n;
+    findings_j = json.dumps([
+        {"method": f.method, "path": f.path, "as_user": f.as_user,
+         "vuln_class": f.vuln_class, "why": f.why, "closed": f.closed}
+        for f in rep.findings
+    ]);
+    auditor() +>:Did():+> Pass(
+        n=n, found=rep.found, fixed=rep.fixed, still_open=rep.still_open,
+        health_ok=rep.health_ok, summary=summary,
+        files_changed_json=json.dumps(changed), findings_json=findings_j,
+        diffs_json=_diffs(files, fixed)
+    );
+    if len(confirmed) == 0 or n >= MAX_PASSES {
+        a.finished = True;
+    }
+}
+
+"""Reseed the working copy from the target on disk and clear all passes."""
+def:pub reset_audit -> int {
+    a = auditor();
+    ps = audit_passes();
+    n = len(ps);
+    for p in ps {
+        del p;
+    }
+    a.passes_done = 0;
+    a.finished = False;
+    a.working_json = _files_to_json(read_target_files());
+    return n;
+}
+
+"""Run passes until the audit converges (a pass finds nothing) or the cap."""
+def:pub run_audit_loop -> None {
+    reset_audit();
+    a = auditor();
+    while not a.finished {
+        audit_step();
+    }
+}
+
+
+# ---- state for the dashboard ------------------------------------------------
+
+obj PassInfo {
+    has n: int,
+        found: int,
+        fixed: int,
+        still_open: int,
+        health_ok: bool,
+        summary: str,
+        files_changed: list[str],
+        findings: list[Finding],
+        diffs: list[FileDiff];
+}
+
+obj FileDiff {
+    has path: str,
+        diff: str;
+}
+
+obj TargetFile {
+    has path: str,
+        content: str;
+}
+
+obj AuditState {
+    has target: str,
+        passes_done: int,
+        finished: bool,
+        total_found: int,
+        total_open: int,
+        health_ok: bool,
+        files: list[TargetFile],
+        passes: list[PassInfo];
+}
+
+def _pass_info(p: Pass) -> PassInfo {
+    fj: list[dict[str, any]] = json.loads(p.findings_json) if p.findings_json else [];
+    findings = [
+        Finding(method=f["method"], path=f["path"], as_user=f["as_user"],
+                vuln_class=f["vuln_class"], why=f["why"], closed=f["closed"])
+        for f in fj
+    ];
+    dj: dict[str, str] = json.loads(p.diffs_json) if p.diffs_json else {};
+    diffs = [FileDiff(path=k, diff=v) for (k, v) in dj.items()];
+    changed: list[str] = json.loads(p.files_changed_json) if p.files_changed_json else [];
+    return PassInfo(
+        n=p.n, found=p.found, fixed=p.fixed, still_open=p.still_open,
+        health_ok=p.health_ok, summary=p.summary, files_changed=changed,
+        findings=findings, diffs=diffs
+    );
+}
+
+"""Everything the audit dashboard shows: the current (working) code and every
+pass so far."""
+def:pub get_audit_state -> AuditState {
+    a = auditor();
+    ps = sorted(audit_passes(), key=_pass_n);
+    infos = [_pass_info(p) for p in ps];
+    files = _files_from_json(a.working_json);
+    tf = [TargetFile(path=k, content=v) for (k, v) in files.items()];
+    total_found = 0;
+    total_open = 0;
+    health = True;
+    for p in ps {
+        total_found += p.found;
+        if p.n == a.passes_done {
+            total_open = p.still_open;
+            health = p.health_ok;
+        }
+    }
+    return AuditState(
+        target=target_name(), passes_done=a.passes_done, finished=a.finished,
+        total_found=total_found, total_open=total_open, health_ok=health,
+        files=tf, passes=infos
+    );
+}
+
+def _pass_n(p: Pass) -> int {
+    return p.n;
 }
