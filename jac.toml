@@ -8,6 +8,7 @@ jac-version = "==0.37.23"
 
 [dependencies]
 flask = ">=3.0"
+tenacity = ">=8.0"  # litellm retries (llm.jac)
 
 [dependencies.npm]
 react = "^19.2.0"
