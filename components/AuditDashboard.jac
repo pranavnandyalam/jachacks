@@ -15,6 +15,8 @@ import from .FileViewer { FileViewer }
 import from .VoiceGuide { VoiceGuide }
 
 glob _aseq: int = 0;
+glob BOOT_RETRY_MS: int = 1500;
+glob BOOT_MAX_TRIES: int = 20;
 glob _lastPhase: str = "idle";
 
 def:pub AuditDashboard -> JsxElement {
@@ -23,7 +25,8 @@ def:pub AuditDashboard -> JsxElement {
         live: LiveInfo | None = None,
         running: bool = False,
         pickedFile: str = "",
-        err: str = "";
+        err: str = "",
+        bootTries: int = 0;
 
     async def load_sites {
         try {
@@ -104,9 +107,26 @@ def:pub AuditDashboard -> JsxElement {
         pickedFile = name;
     }
 
+    """First load, retried: a freshly woken host (or its proxy) can reject the
+    first few calls, so keep trying every BOOT_RETRY_MS instead of leaving the
+    page blank; only report an error if it never comes up."""
+    async def boot {
+        try {
+            sites = await list_targets();
+            state = await get_audit_state();
+            err = "";
+        } except Exception as e {
+            bootTries = bootTries + 1;
+            if bootTries < BOOT_MAX_TRIES {
+                setTimeout(lambda { boot(); }, BOOT_RETRY_MS);
+            } else {
+                err = "Can't reach the server: " + str(e);
+            }
+        }
+    }
+
     async can with entry {
-        await load_sites();
-        await refresh();
+        await boot();
         await poll_live();
     }
 
