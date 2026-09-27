@@ -12,6 +12,7 @@ import from ..config { TargetInfo, list_targets, set_active_target }
 import from ..live { LiveInfo, get_live }
 import from .AuditPass { AuditPass }
 import from .FileViewer { FileViewer }
+import from .VoiceGuide { VoiceGuide }
 
 glob _aseq: int = 0;
 glob _lastPhase: str = "idle";
@@ -152,6 +153,7 @@ def:pub AuditDashboard -> JsxElement {
                 </label>
                 <button type="button" className="btn primary" disabled={busy} onClick={run}>{primaryLabel}</button>
                 <button type="button" className="btn" disabled={busy or not state or state.passes_done == 0} onClick={on_reset}>{"Reset"}</button>
+                <VoiceGuide stamp={(state.target if state else "") + ":" + str(state.passes_done if state else 0)}/>
                 <a className="quiet-link" href="/graph" target="_blank" rel="noreferrer">{"View graph"}</a>
             </div>
         </header>

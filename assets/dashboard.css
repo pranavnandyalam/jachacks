@@ -197,3 +197,13 @@ h1, h2, p { margin: 0; }
   border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 6px 10px; cursor: pointer; }
 .site-select:hover:not(:disabled) { border-color: var(--ink-2); }
 .site-select:disabled { color: var(--muted); }
+
+/* Ask Red Queen voice button */
+.voice { display: inline-flex; align-items: center; gap: 8px; }
+.voice-btn { display: inline-flex; align-items: center; gap: 8px; }
+.voice-btn.is-live { border-color: var(--found); color: var(--found); background: var(--found-bg); }
+.voice-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--found); }
+.voice-dot.is-speaking { animation: voice-pulse 0.9s ease-in-out infinite; }
+.voice-err { font-size: 13px; color: var(--found); max-width: 32ch; }
+@keyframes voice-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.6); opacity: 0.5; } }
+@media (prefers-reduced-motion: reduce) { .voice-dot.is-speaking { animation: none; } }
