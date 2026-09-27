@@ -83,6 +83,9 @@ It works across **4 stacks** (Flask, FastAPI, Express/TypeScript and Go) on 5 de
 
 ## What's next for Red Queen
 
+- **Always on:** Red Queen watches the codebase and re-audits automatically on every edit, commit or push. A new route or a changed handler triggers a fresh scan of just what changed, so a vulnerability gets caught and patched minutes after it's introduced, not in a quarterly pentest.
+- **Agent swarms:** instead of one Red and one Blue, spawn a swarm of specialized attackers (access control, injection, SSRF, secrets) that hunt in parallel and coordinate through the shared Jac graph. Walkers dispatch each agent to its slice of the codebase, and a pool of defenders patches in parallel while the referee serializes what goes live.
+- **Scaling with vLLM:** serve open-weight models on our own GPUs with vLLM, so swarms can run hundreds of scans in parallel at high throughput and near-zero cost per run, and code never has to leave the customer's infrastructure.
 - **A pull-request bot:** run Red Queen on every PR and push the verified patch as a suggested commit.
 - **Live verification for every language:** boot Go, Node and FastAPI apps in containers and replay exploits over HTTP, so non-Python fixes get the same proof as Python ones.
 - **More bug classes:** injection, SSRF and insecure deserialization, beyond access control.
